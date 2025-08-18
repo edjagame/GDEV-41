@@ -1,0 +1,8 @@
+raylib/
+**/raylib/
+.vscode/
+**/.vscode/
+build.sh
+**/build.sh
+*.out
+**/*.out
