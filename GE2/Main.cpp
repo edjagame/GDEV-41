@@ -11,8 +11,8 @@ int main() {
     float rectOriginY = 20;
     float rectWidth = 150;
     float rectHeight = 100;
-    float rectSpeedX = 0.6f;
-    float rectSpeedY = 0.3f;
+    float rectSpeedX = 0.5f;
+    float rectSpeedY = 0.5f;
 
     std::vector<Color> rectColors = { RED, GREEN, BLUE, YELLOW, PURPLE };
     int currentColorIndex = 0;
