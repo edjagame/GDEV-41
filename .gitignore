@@ -8,3 +8,4 @@ build.sh
 **/*.out
 out/
 **/out/
+**/out
