@@ -41,13 +41,16 @@ void InitGrid(std::vector<GridCell> &grid, int cellSize) {
         }
     }
 }
-
 void AssignBallToGrid(std::vector<GridCell> &grid, Ball &ball, int cellSize) {
-    int index1 = (int)(ball.position.y + ball.radius) / cellSize * (WINDOW_WIDTH / cellSize) + (int)(ball.position.x) / cellSize;
-    int index2 = (int)(ball.position.y - ball.radius) / cellSize * (WINDOW_WIDTH / cellSize) + (int)(ball.position.x) / cellSize;
-    int index3 = (int)(ball.position.y) / cellSize * (WINDOW_WIDTH / cellSize) + ((int)ball.position.x + ball.radius) / cellSize;
-    int index4 = (int)(ball.position.y) / cellSize * (WINDOW_WIDTH / cellSize) + ((int)ball.position.x - ball.radius) / cellSize;
-    
+
+    const int cellCols = WINDOW_WIDTH % cellSize != 0 ? WINDOW_WIDTH / cellSize + 1 : WINDOW_WIDTH / cellSize;
+    const int cellRows = WINDOW_HEIGHT % cellSize != 0 ? WINDOW_HEIGHT / cellSize + 1 : WINDOW_HEIGHT / cellSize;
+
+    int index1 = (int)(ball.position.y + ball.radius) / cellSize * cellCols + (int)(ball.position.x) / cellSize;
+    int index2 = (int)(ball.position.y - ball.radius) / cellSize * cellCols + (int)(ball.position.x) / cellSize;
+    int index3 = (int)(ball.position.y) / cellSize * cellCols + ((int)ball.position.x + ball.radius) / cellSize;
+    int index4 = (int)(ball.position.y) / cellSize * cellCols + ((int)ball.position.x - ball.radius) / cellSize;
+
     std::vector<GridCell*> assignedCells;
     if(index1 >= 0 && index1 < grid.size()) assignedCells.push_back(&grid[index1]);
     if(index2 >= 0 && index2 < grid.size()) assignedCells.push_back(&grid[index2]);
@@ -66,7 +69,7 @@ float RandomFloat(float min, float max) {
 }
 
 void SpawnBalls(std::vector<Ball> &balls) {
-    for (int i = 0; i < 1; i++) {
+    for (int i = 0; i < 25; i++) {
         Ball ball;
         ball.position = {WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f};
         ball.radius = RandomFloat(5.0f, 10.0f);
@@ -145,7 +148,7 @@ int main() {
 
     std::vector<GridCell> grid;
 
-    const int cellSize = 110;
+    const int cellSize = 40;
     InitGrid(grid, cellSize);
 
     int spacePresses = 0;
