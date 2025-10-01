@@ -19,7 +19,6 @@ struct Ball {
     float inverse_mass;
     Vector2 acceleration;
     Vector2 velocity;
-
     std::vector<Ball*> collisions;
 };
 
@@ -44,7 +43,6 @@ void InitGrid(std::vector<GridCell> &grid, int cellSize) {
 void AssignBallToGrid(std::vector<GridCell> &grid, Ball &ball, int cellSize) {
 
     const int cellCols = WINDOW_WIDTH % cellSize != 0 ? WINDOW_WIDTH / cellSize + 1 : WINDOW_WIDTH / cellSize;
-    const int cellRows = WINDOW_HEIGHT % cellSize != 0 ? WINDOW_HEIGHT / cellSize + 1 : WINDOW_HEIGHT / cellSize;
 
     int index1 = (int)(ball.position.y + ball.radius) / cellSize * cellCols + (int)(ball.position.x) / cellSize;
     int index2 = (int)(ball.position.y - ball.radius) / cellSize * cellCols + (int)(ball.position.x) / cellSize;
@@ -148,7 +146,7 @@ int main() {
 
     std::vector<GridCell> grid;
 
-    const int cellSize = 40;
+    const int cellSize = 80;
     InitGrid(grid, cellSize);
 
     int spacePresses = 0;
