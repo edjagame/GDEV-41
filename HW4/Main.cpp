@@ -10,62 +10,112 @@ const int WINDOW_HEIGHT = 720;
 const float FPS = 60;
 const float TIMESTEP = 1 / FPS; 
 const float FRICTION = 0.0;
+const int QUADTREE_DEPTH = 6;
 
+// Prototypes
+struct Ball;
+struct QuadTree;
+float RandomFloat(float min, float max);
+Rectangle GetBallAABB(const Ball &ball);
+bool CheckAABBContains(const Rectangle &a, const Rectangle &b);
+
+// Ball struct
 struct Ball {
     float radius;
     Vector2 position;
-    Color color;
+
+    // Variables for physics
     float mass;
     float inverse_mass;
     Vector2 acceleration;
     Vector2 velocity;
-    std::vector<Ball*> collisions;
+
+    Color color = WHITE;
+
+    // points to the node in the quadtree this ball is currently in
+    QuadTree* currentNode = nullptr;
 };
 
-struct GridCell {
+// Quadtree Node struct
+struct QuadTree {
+    Rectangle boundary;
+    QuadTree* children[4] = {nullptr, nullptr, nullptr, nullptr};
+    QuadTree* parent = nullptr;
+    int depth = 0;
+    bool isLeaf = false;
     std::vector<Ball*> balls;
-    int x, y;
-    int numBalls;
-    int width;
+
+    // constructor (recursively creates children)
+    QuadTree(Rectangle boundary, int depth = 0, QuadTree* parent = nullptr)
+        : boundary(boundary), parent(parent), depth(depth) {
+        if (depth >= QUADTREE_DEPTH) {
+            isLeaf = true;
+            return;
+        }
+
+        float halfWidth = boundary.width / 2.0f;
+
+        children[0] = new QuadTree({boundary.x, boundary.y, halfWidth, halfWidth}, depth + 1, this);
+        children[1] = new QuadTree({boundary.x + halfWidth, boundary.y, halfWidth, halfWidth}, depth + 1, this);
+        children[2] = new QuadTree({boundary.x, boundary.y + halfWidth, halfWidth, halfWidth}, depth + 1, this);
+        children[3] = new QuadTree({boundary.x + halfWidth, boundary.y + halfWidth, halfWidth, halfWidth}, depth + 1, this);
+    }
+
+    // destructor 
+    ~QuadTree() {
+        for (int i = 0; i < 4; ++i) {
+            delete children[i];
+            children[i] = nullptr;
+        }
+    }
 };
 
-void InitGrid(std::vector<GridCell> &grid, int cellSize) {
-    for(int y = 0; y < WINDOW_HEIGHT; y += cellSize) {
-        for(int x = 0; x < WINDOW_WIDTH; x += cellSize) {
-            GridCell cell;
-            cell.x = x / cellSize;
-            cell.y = y / cellSize;
-            cell.width = cellSize;
-            grid.push_back(cell);
-        }
-    }
-}
-void AssignBallToGrid(std::vector<GridCell> &grid, Ball &ball, int cellSize) {
-
-    const int cellCols = WINDOW_WIDTH % cellSize != 0 ? WINDOW_WIDTH / cellSize + 1 : WINDOW_WIDTH / cellSize;
-
-    int index1 = (int)(ball.position.y + ball.radius) / cellSize * cellCols + (int)(ball.position.x) / cellSize;
-    int index2 = (int)(ball.position.y - ball.radius) / cellSize * cellCols + (int)(ball.position.x) / cellSize;
-    int index3 = (int)(ball.position.y) / cellSize * cellCols + ((int)ball.position.x + ball.radius) / cellSize;
-    int index4 = (int)(ball.position.y) / cellSize * cellCols + ((int)ball.position.x - ball.radius) / cellSize;
-
-    std::vector<GridCell*> assignedCells;
-    if(index1 >= 0 && index1 < grid.size()) assignedCells.push_back(&grid[index1]);
-    if(index2 >= 0 && index2 < grid.size()) assignedCells.push_back(&grid[index2]);
-    if(index3 >= 0 && index3 < grid.size()) assignedCells.push_back(&grid[index3]);
-    if(index4 >= 0 && index4 < grid.size()) assignedCells.push_back(&grid[index4]);
-
-    for(GridCell* cell : assignedCells) {
-        if(std::find(cell->balls.begin(), cell->balls.end(), &ball) == cell->balls.end()) {
-            cell->balls.push_back(&ball);
-        }
+// Positions the root node at the center of the window
+Rectangle GetRootNodeBoundary() {
+    if (WINDOW_WIDTH >= WINDOW_HEIGHT) {
+        return {0, -(WINDOW_WIDTH - WINDOW_HEIGHT) / 2.0f, (float)WINDOW_WIDTH, (float)WINDOW_WIDTH};
+    } else {
+        return {-(WINDOW_HEIGHT - WINDOW_WIDTH) / 2.0f, 0, (float)WINDOW_HEIGHT, (float)WINDOW_HEIGHT};
     }
 }
 
-float RandomFloat(float min, float max) {
-    return min + (max - min) * (static_cast<float>(rand()) / RAND_MAX);
+void InsertBallIntoQuadTree(QuadTree &node, Ball* ball) {
+    if (!node.isLeaf) {
+        for (int i = 0; i < 4; ++i) {
+            if (CheckAABBContains(GetBallAABB(*ball), node.children[i]->boundary)) {
+                InsertBallIntoQuadTree(*node.children[i], ball);
+                return;
+            }
+        }
+        // if none of the children contain the ball, add it to the current node
+        node.balls.push_back(ball);
+        ball->currentNode = &node;
+    } else {
+        //if it reaches leaf node, add ball to this node
+        node.balls.push_back(ball);
+        ball->currentNode = &node;
+    }
 }
 
+// Removes a ball from a quadtree node
+void RemoveBallFromNode(QuadTree &node, Ball& ball) {
+    std::vector<Ball*> &nodeBalls = node.balls;
+    nodeBalls.erase(std::remove(nodeBalls.begin(), nodeBalls.end(), &ball), nodeBalls.end());
+    ball.currentNode = nullptr;
+}
+
+// Clears all balls from the quadtree nodes
+void ClearQuadTree(QuadTree &node) {
+    node.balls.clear();
+    for (int i = 0; i < 4; ++i) {
+        if (node.children[i] != nullptr) {
+            ClearQuadTree(*node.children[i]);
+        }
+    }
+}
+
+// Function to spawn the 25 small balls
+// appends it to the balls vector
 void SpawnBalls(std::vector<Ball> &balls) {
     for (int i = 0; i < 25; i++) {
         Ball ball;
@@ -73,7 +123,7 @@ void SpawnBalls(std::vector<Ball> &balls) {
         ball.radius = RandomFloat(5.0f, 10.0f);
         ball.velocity = {RandomFloat(-400.0f, 400.0f), RandomFloat(-300.0f, 300.0f)};
         ball.acceleration = {0.0f, 0.0f};
-        ball.color = {
+        ball.color = Color {
             static_cast<unsigned char>(RandomFloat(0, 255)),
             static_cast<unsigned char>(RandomFloat(0, 255)),
             static_cast<unsigned char>(RandomFloat(0, 255)),
@@ -86,13 +136,15 @@ void SpawnBalls(std::vector<Ball> &balls) {
     }
 }
 
+// Function to spawn the big ball
+// appends it to the balls vector
 void SpawnBigBall(std::vector<Ball> &balls) {
     Ball ball;
     ball.position = {WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f};
     ball.radius = 25.0f;
     ball.velocity = {RandomFloat(-400.0f, 400.0f), RandomFloat(-400.0f, 400.0f)};
     ball.acceleration = {0.0f, 0.0f};
-    ball.color = {
+    ball.color = Color {
         static_cast<unsigned char>(RandomFloat(0, 255)),
         static_cast<unsigned char>(RandomFloat(0, 255)),
         static_cast<unsigned char>(RandomFloat(0, 255)),
@@ -103,29 +155,92 @@ void SpawnBigBall(std::vector<Ball> &balls) {
     balls.push_back(ball);
 }
 
+// Function to move the ball based on its velocity and acceleration
+// no need to update acceleration for now since no external forces are applied
+void MoveBall(Ball &ball, float delta_time) {
+    // ball.velocity = Vector2Add(ball.velocity, Vector2Scale(ball.acceleration, delta_time));
+    ball.velocity = Vector2Subtract(ball.velocity, Vector2Scale(ball.velocity, FRICTION * ball.inverse_mass * delta_time));
+    ball.position = Vector2Add(ball.position, Vector2Scale(ball.velocity, delta_time));
+}
+
+// gets the AABB of a ball as a rectangle
+Rectangle GetBallAABB(const Ball &ball) {
+    return {
+        ball.position.x - ball.radius,
+        ball.position.y - ball.radius,
+        ball.radius * 2,
+        ball.radius * 2
+    };
+}
+
+// Helper function to check collision between two circles
 bool CheckCircleCollision(const Ball &a, const Ball &b) {
     return Vector2Distance(a.position, b.position) < (a.radius + b.radius);
 }
 
-void Collide(Ball &a, Ball &b, Vector2 normal, float elasticity) {
+
+// Helper function to check AABB collision between two rectangles
+bool CheckAABBCollision(const Rectangle &a, const Rectangle &b) {
+    return (a.x < b.x + b.width &&
+            a.x + a.width > b.x &&
+            a.y < b.y + b.height &&
+            a.y + a.height > b.y);
+}
+
+// Helper function to check if AABB a is completely inside AABB b (a is inside b)
+bool CheckAABBContains(const Rectangle &a, const Rectangle &b) {
+    return (a.x >= b.x &&
+            a.x + a.width <= b.x + b.width &&
+            a.y >= b.y &&
+            a.y + a.height <= b.y + b.height);
+}
+
+// Main collision physics function
+void Collide(Ball &a, Ball &b, float elasticity) {
+    Vector2 normal = Vector2Subtract(b.position, a.position);
     Vector2 relativeVelocity = Vector2Subtract(b.velocity, a.velocity);
     float result = Vector2DotProduct(relativeVelocity, normal);
     if(result < 0) {
         Vector2 n = Vector2Normalize(normal);
         float r = Vector2DotProduct(relativeVelocity, n);
+
+        // impulse is negative now!!!!
         float impulse = - (1 + elasticity) * r / ((Vector2Length(n)) * (a.inverse_mass + b.inverse_mass));
         b.velocity = Vector2Add(b.velocity, Vector2Scale(n, impulse * b.inverse_mass));
         a.velocity = Vector2Subtract(a.velocity, Vector2Scale(n, impulse * a.inverse_mass));
     }
 }
 
-void MoveBall(Ball &ball, float delta_time) {
-    ball.velocity = Vector2Add(ball.velocity, Vector2Scale(ball.acceleration, delta_time));
-    ball.velocity = Vector2Subtract(ball.velocity, Vector2Scale(ball.velocity, FRICTION * ball.inverse_mass * delta_time));
-    ball.position = Vector2Add(ball.position, Vector2Scale(ball.velocity, delta_time));
+void QuadTreeCollision(QuadTree &node, std::vector<Ball*> &parentBalls, float elasticity)  {
+    // Get the og size of the stack (only the parent's balls) then insert the nodes balls to the vector
+    const size_t base = parentBalls.size();
+    parentBalls.insert(parentBalls.end(), node.balls.begin(), node.balls.end());
+
+    // Collide all balls in the vector w each other
+    for (int i = base; i < parentBalls.size(); ++i) {
+        Ball* a = parentBalls[i];
+        for (int j = 0; j < i; ++j) {
+            Ball* b = parentBalls[j];
+            if (CheckCircleCollision(*a, *b)) {
+                Collide(*a, *b, elasticity);
+            }
+        }
+    }
+
+    // Recursify the new vector down to the child nodes
+    for (int i = 0; i < 4; ++i) {
+        if (node.children[i] != nullptr) {
+            QuadTreeCollision(*node.children[i], parentBalls, elasticity);
+        }
+    }
+
+    // remove the non-parent balls from the vector
+    parentBalls.resize(base);
+
 }
 
 void CheckWallCollision(Ball &ball) {
+
     if(ball.position.x + ball.radius >= WINDOW_WIDTH || ball.position.x - ball.radius <= 0) {
         ball.velocity.x *= -1;
     }
@@ -134,23 +249,41 @@ void CheckWallCollision(Ball &ball) {
     }
 }
 
+// Helper function that returns a random float value between min and max
+float RandomFloat(float min, float max) {
+    return min + (max - min) * (static_cast<float>(rand()) / RAND_MAX);
+}
+
+void DrawActiveNodes(QuadTree &node) {
+    if (!node.balls.empty()) {
+        DrawRectangleLinesEx(node.boundary, 2.0f, Color{
+            static_cast<unsigned char>(40 + node.depth * 30),
+            static_cast<unsigned char>(40 + node.depth * 30),
+            static_cast<unsigned char>(40 + node.depth * 30),
+            255
+        });
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        if (node.children[i] != nullptr) {
+            DrawActiveNodes(*node.children[i]);
+        }
+    }
+}
+
 int main() {
     std::vector<Ball> balls;
-
-    InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Physics Demo");
-
-    SetTargetFPS(FPS);
-
+    balls.reserve(4096);
     float accumulator = 0;
     float elasticity = 1.0;
-
-    std::vector<GridCell> grid;
-
-    const int cellSize = 80;
-    InitGrid(grid, cellSize);
-
     int spacePresses = 0;
+    
+    QuadTree root = QuadTree(GetRootNodeBoundary());
 
+    InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Quadtrees");
+    SetTargetFPS(FPS);
+
+    
     while (!WindowShouldClose()) {
         float delta_time = GetFrameTime();
         Vector2 forces = Vector2Zero(); 
@@ -169,61 +302,46 @@ int main() {
         accumulator += delta_time;
         
         while(accumulator >= TIMESTEP) {
+
+            // Move all balls
             for(Ball &ball : balls) {
                 MoveBall(ball, TIMESTEP);
-                AssignBallToGrid(grid, ball, cellSize);
-                ball.collisions.clear();
+            }
+
+            // Recreates quadtree every frame (since its easier hehe)
+            ClearQuadTree(root);
+            for (Ball &ball : balls) {
+                ball.currentNode = nullptr;
+                InsertBallIntoQuadTree(root, &ball);
             }
             
-            for(GridCell &cell : grid) {
+            // Handle collisions by traversing the quadtree
+            std::vector<Ball*> parentBalls;
+            parentBalls.reserve(balls.size());
+            QuadTreeCollision(root, parentBalls, elasticity);
 
-                int n = cell.balls.size();
-                if (n <= 1) {
-                    cell.numBalls = n;
-                    cell.balls.clear();
-                    continue;
-                }
-
-                for (Ball* a : cell.balls) {
-                    for (Ball* b : cell.balls) {
-                        if (std::find(a->collisions.begin(), a->collisions.end(), b) != a->collisions.end()) continue;
-                        if (a != b && CheckCircleCollision(*a, *b)) {
-                            Vector2 normal = Vector2Subtract(b->position, a->position);
-                            Collide(*a, *b, normal, elasticity);
-                            a->collisions.push_back(b);
-                            b->collisions.push_back(a);
-                        }
-                    }
-                }
-
-                cell.numBalls = n;
-                cell.balls.clear();
-            }
-
+            // Check wall collisions
             for (Ball &ball : balls) {
                 CheckWallCollision(ball);
             }
+
             accumulator -= TIMESTEP;  
         }
         
         BeginDrawing();
         ClearBackground(BLACK);
-
-        for(GridCell &cell : grid) {
-            DrawRectangleLines(cell.x * cellSize, cell.y * cellSize, cell.width * cellSize, cell.width * cellSize, GRAY);
-            DrawText(TextFormat("(%d, %d)", cell.x, cell.y), cell.x * cellSize + 5, cell.y * cellSize + 5, 10, GRAY);
-            DrawText(TextFormat("%d", (int)cell.numBalls), cell.x * cellSize + 5, cell.y * cellSize + 20, 10, GRAY);
-        }
+        
+        DrawActiveNodes(root);
 
         for(Ball &ball : balls) {
             DrawCircleV(ball.position, ball.radius, ball.color);
         }
-
         DrawFPS(10, 10);
         DrawText(TextFormat("Balls: %d", balls.size()), 10, 30, 20, WHITE);
         EndDrawing();
 
     }
+    ClearQuadTree(root);
     CloseWindow();
     return 0;
 }
