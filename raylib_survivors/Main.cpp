@@ -15,6 +15,7 @@ struct ProjectileTag { bool isPlayerProjectile;/* If an entity has this componen
 
 struct HealthComponent { float health; };
 struct IFramesComponent { bool isInvuln; float invulnTime; float invulnAccumulator; };
+struct LevelComponent { int level; float experience; };
 
 // Basic components for position, velocity, and movement
 struct PositionComponent { Vector2 position; };
@@ -35,12 +36,14 @@ struct HitFlashComponent { bool isHit; float flashDuration; float flashAccumulat
 struct AimDirectionComponent { Vector2 direction; };
 struct FireRateComponent { float fireRate; float fireRateAccumulator; };
 struct LifetimeComponent { float remaining; };
+struct PierceComponent { int pierceCount; int pierceAccumulator; std::vector<entt::entity> piercedEntities; };
 
 // Projectile data for spawning projectiles (used by weapons)
 struct ProjectileComponent {    CircleHitboxComponent projectileHitbox; 
                                 ContactDamageComponent projectileDamage;
                                 MoveSpeedComponent projectileSpeed; 
                                 LifetimeComponent projectileLifetime;
+                                PierceComponent projectilePierce;
                             };
 
 
@@ -57,6 +60,7 @@ void InitPlayer(entt::registry& registry, entt::entity e) {
     registry.emplace<HealthComponent>(e, health);
     registry.emplace<PositionComponent>(e, center);
     registry.emplace<VelocityComponent>(e, Vector2Zero());
+    registry.emplace<AimDirectionComponent>(e, Vector2Zero());
     registry.emplace<ColorComponent>(e, WHITE);
     registry.emplace<MoveSpeedComponent>(e, moveSpeed);
     registry.emplace<SpriteComponent>(e, sprite, spriteSize);
@@ -78,18 +82,21 @@ void InitEnemy(entt::registry& registry, entt::entity e,
     registry.emplace<MoveSpeedComponent>(e, moveSpeed);
     registry.emplace<CircleHitboxComponent>(e, CircleHitboxComponent{20.0f});
     registry.emplace<HitFlashComponent>(e, false, 0.1f, 0.0f, RED);
+    
+    registry.emplace<SpriteComponent>(e, LoadTexture("assets/enemy.png"), Vector2{40, 40});
 }
 
 void InitGun (entt::registry& registry, entt::entity e) {
     registry.emplace<WeaponTag>(e);
     registry.emplace<PositionComponent>(e, Vector2Zero());
     registry.emplace<AimDirectionComponent>(e, Vector2Zero());
-    registry.emplace<FireRateComponent>(e, 0.5f, 0.0f); // fire rate of 0.5 seconds
+    registry.emplace<FireRateComponent>(e, 0.3f, 0.0f); 
     registry.emplace<ProjectileComponent>(  e, 
                                             CircleHitboxComponent{5.0f}, 
                                             10.0f,
                                             MoveSpeedComponent{400.0f}, 
-                                            2.0f);
+                                            2.0f,
+                                            PierceComponent{3, 0} );
 }
 
 // Handles player input and updates velocity component
@@ -117,6 +124,7 @@ void PlayerMovementSystem(entt::registry& registry, float delta_time) {
         position.y += velocity.y * delta_time;
     }
 
+    // Clamp player position
     auto spriteView = registry.view<PositionComponent, SpriteComponent>();
     for (auto e : spriteView) {
         Vector2& position = spriteView.get<PositionComponent>(e).position;
@@ -152,8 +160,36 @@ void EnemyMovementSystem(entt::registry& registry, float delta_time) {
     }
 }
 
+void EnemySpawnSystem(entt::registry& registry, float delta_time) {
+    static float spawnAccumulator = 0.0f;
+    static float spawnInterval = 0.5f;
+
+    spawnAccumulator += delta_time;
+    if (spawnAccumulator >= spawnInterval) {
+        spawnAccumulator = 0.0f;
+
+        entt::entity enemy_entity = registry.create();
+        Vector2 spawnPosition;
+        int edge = GetRandomValue(0, 3);
+        switch (edge) {
+            case 0: 
+                spawnPosition = { (float)GetRandomValue(0, WINDOW_WIDTH), 0.0f };
+                break;
+            case 1: 
+                spawnPosition = { (float)GetRandomValue(0, WINDOW_WIDTH), (float)WINDOW_HEIGHT };
+                break;
+            case 2: 
+                spawnPosition = { 0.0f, (float)GetRandomValue(0, WINDOW_HEIGHT) };
+                break;
+            default:
+                spawnPosition = { (float)WINDOW_WIDTH, (float)GetRandomValue(0, WINDOW_HEIGHT) };
+                break;
+        }
+        InitEnemy(registry, enemy_entity, spawnPosition, 50, 100.0f);
+    }
+}
+
 void DrawSystem(entt::registry& registry) {
-    //Draw Sprites
     auto view = registry.view<PositionComponent, SpriteComponent, ColorComponent>();
     for (auto e : view) {
         Vector2& pos = view.get<PositionComponent>(e).position;
@@ -164,18 +200,25 @@ void DrawSystem(entt::registry& registry) {
         Rectangle source = { 0.0f, 0.0f, (float)sprite.width, (float)sprite.height };
         Rectangle dest = { pos.x, pos.y, spriteSize.x, spriteSize.y };
         Vector2 origin = { spriteSize.x * 0.5f, spriteSize.y * 0.5f };
-        DrawTexturePro(sprite, source, dest, origin, 0.0f, color);
+
+        float angle = 0.0f;
+        // If entity has an AimDirectionComponent, use it to compute rotation
+        if (auto aim = registry.try_get<AimDirectionComponent>(e)) {
+            angle = atan2f(aim->direction.y, aim->direction.x) * RAD2DEG;
+        }
+
+        DrawTexturePro(sprite, source, dest, origin, angle, color);
     }
 
-    // Draw Hitboxes
-    auto shapeView = registry.view<PositionComponent, CircleHitboxComponent, ColorComponent>();
-    for (auto e : shapeView) {
-        Vector2& pos = shapeView.get<PositionComponent>(e).position;
-        CircleHitboxComponent& circle = shapeView.get<CircleHitboxComponent>(e);
-        Color& color = shapeView.get<ColorComponent>(e).currentColor;
+    //Draw Hitboxes
+    // auto shapeView = registry.view<PositionComponent, CircleHitboxComponent, ColorComponent>();
+    // for (auto e : shapeView) {
+    //     Vector2& pos = shapeView.get<PositionComponent>(e).position;
+    //     CircleHitboxComponent& circle = shapeView.get<CircleHitboxComponent>(e);
+    //     Color& color = shapeView.get<ColorComponent>(e).currentColor;
 
-        DrawCircleV(pos, circle.radius, color);
-    }
+    //     DrawCircleV(pos, circle.radius, color);
+    // }
 
     // Draw projectiles
     auto projectileView = registry.view<ProjectileTag, PositionComponent, CircleHitboxComponent, ColorComponent>();
@@ -195,7 +238,6 @@ void AimSystem(entt::registry& registry) {
     // Get player position
     Vector2 playerPos = Vector2Zero();
     auto playerView = registry.view<PlayerTag, PositionComponent>();
-    // should only be one player 
     for (auto e : playerView) {
         playerPos = playerView.get<PositionComponent>(e).position;
     }
@@ -209,6 +251,17 @@ void AimSystem(entt::registry& registry) {
         Vector2 mousePos = GetMousePosition();
         aimDir = Vector2Normalize(Vector2Subtract(mousePos, position));
     }
+
+    auto playerAimView = registry.view<PlayerTag, AimDirectionComponent, PositionComponent>();
+    for (auto e : playerAimView) {
+        Vector2& aimDir = playerAimView.get<AimDirectionComponent>(e).direction;
+        Vector2& position = playerAimView.get<PositionComponent>(e).position;
+
+        Vector2 mousePos = GetMousePosition();
+
+        aimDir = Vector2Normalize(Vector2Subtract(mousePos, position));
+    }
+
 }
 
 void FireSystem(entt::registry& registry, float delta_time) {
@@ -242,6 +295,8 @@ void FireSystem(entt::registry& registry, float delta_time) {
             registry.emplace<ColorComponent>(projectile, ColorComponent{RED});
             registry.emplace<LifetimeComponent>(projectile, LifetimeComponent{ lifetime });
             registry.emplace<ContactDamageComponent>(projectile, ContactDamageComponent{ damage });
+            // Initialize projectile pierce using the weapon's projectile data
+            registry.emplace<PierceComponent>(projectile, projectileData.projectilePierce);
         }
     }
 }
@@ -250,6 +305,13 @@ void HitSystem(entt::registry& registry) {
     auto projectileView = registry.view<ProjectileTag, PositionComponent, CircleHitboxComponent, ContactDamageComponent>();
     auto enemyView = registry.view<EnemyTag, PositionComponent, CircleHitboxComponent, HealthComponent, ContactDamageComponent, HitFlashComponent>();
     auto playerView = registry.view<PlayerTag, PositionComponent, CircleHitboxComponent, HealthComponent, IFramesComponent, HitFlashComponent>();
+    
+    // Get player position
+    Vector2 playerPos = Vector2Zero();
+    for (auto e : playerView) {
+        playerPos = playerView.get<PositionComponent>(e).position;
+    }
+
     // naive implementation, TODO: switch to uniform grid
     for (auto proj : projectileView) {
         Vector2& projPos = projectileView.get<PositionComponent>(proj).position;
@@ -261,13 +323,26 @@ void HitSystem(entt::registry& registry) {
             CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(enemy);
             HealthComponent& enemyHealth = enemyView.get<HealthComponent>(enemy);
             HitFlashComponent& enemyHitFlash = enemyView.get<HitFlashComponent>(enemy);
-            
+            PierceComponent& pc = registry.get<PierceComponent>(proj);
+
             float dist = Vector2Distance(projPos, enemyPos);
-            if (dist <= (projHitbox.radius + enemyHitbox.radius)) {
+            bool hasPierced = std::find(pc.piercedEntities.begin(), pc.piercedEntities.end(), enemy) != pc.piercedEntities.end();
+            if (dist <= (projHitbox.radius + enemyHitbox.radius) && !hasPierced) {
                 enemyHealth.health -= projDamage;
                 enemyHitFlash.isHit = true;
-                registry.destroy(proj);
-                break;
+
+                enemyPos = Vector2Add(enemyPos, Vector2Scale(Vector2Normalize(Vector2Subtract(enemyPos, playerPos)), 10.0f));
+                
+                // Handle piercing: increment accumulator and only destroy when we've
+                // exceeded the configured pierce count. If no PierceComponent is
+                // present, default to destroying the projectile immediately.
+                
+                pc.pierceAccumulator += 1;
+                pc.piercedEntities.push_back(enemy);
+                if (pc.pierceAccumulator >= pc.pierceCount) {
+                    registry.destroy(proj);
+                    break; // projectile is destroyed, stop checking more enemies
+                }
             }
         }
     }
@@ -397,6 +472,8 @@ int main() {
 
         PlayerMovementSystem(registry, delta_time);
         EnemyMovementSystem(registry, delta_time);
+
+        EnemySpawnSystem(registry, delta_time);
 
         AimSystem(registry);
         FireSystem(registry, delta_time);
