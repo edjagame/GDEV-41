@@ -8,10 +8,12 @@ const int WINDOW_HEIGHT = 720;
 const float FPS = 60.0f;
 const float TIMESTEP = 1 / FPS; 
 
+// ik these tags are not very ecs-y but to make things easier to manage HAHAHAH
 struct PlayerTag {/* If an entity has this component, it is a player */};
 struct EnemyTag {/* If an entity has this component, it is an enemy */};
 struct WeaponTag {/* If an entity has this component, it is a weapon */};
 struct ProjectileTag { bool isPlayerProjectile;/* If an entity has this component, it is a projectile */};
+struct XPOrbTag { float amount; /* If an entity has this component, it is an XP orb */};
 
 struct HealthComponent { float health; };
 struct IFramesComponent { bool isInvuln; float invulnTime; float invulnAccumulator; };
@@ -24,7 +26,18 @@ struct MoveSpeedComponent { float speed; };
 
 // Shape components for drawing
 struct RectangleHitboxComponent { Vector2 size; };
-struct CircleHitboxComponent { float radius; };
+struct CircleHitboxComponent { 
+    float radius; 
+    Rectangle GetAABB(const Vector2& position) const {
+        return Rectangle{
+            position.x - radius,
+            position.y - radius,
+            radius * 2,
+            radius * 2
+        };
+    }
+};
+
 struct ContactDamageComponent { float damage; };
 
 // Drawing related components
@@ -37,6 +50,7 @@ struct AimDirectionComponent { Vector2 direction; };
 struct FireRateComponent { float fireRate; float fireRateAccumulator; };
 struct LifetimeComponent { float remaining; };
 struct PierceComponent { int pierceCount; int pierceAccumulator; std::vector<entt::entity> piercedEntities; };
+struct KnockbackComponent { float force; };
 
 // Projectile data for spawning projectiles (used by weapons)
 struct ProjectileComponent {    CircleHitboxComponent projectileHitbox; 
@@ -44,8 +58,66 @@ struct ProjectileComponent {    CircleHitboxComponent projectileHitbox;
                                 MoveSpeedComponent projectileSpeed; 
                                 LifetimeComponent projectileLifetime;
                                 PierceComponent projectilePierce;
+                                KnockbackComponent projectileKnockback;
                             };
 
+struct GridCell {
+    std::vector<entt::entity> entities;
+    int x, y;
+    int numEntities;
+    int width;
+};
+
+void InitGrid(std::vector<GridCell> &grid, int cellSize) {
+    for(GridCell& cell : grid) {
+        cell.entities.clear();
+        cell.numEntities = 0;
+    }
+
+    for(int y = 0; y < WINDOW_HEIGHT; y += cellSize) {
+        for(int x = 0; x < WINDOW_WIDTH; x += cellSize) {
+            GridCell cell;
+            cell.x = x / cellSize;
+            cell.y = y / cellSize;
+            cell.width = cellSize;
+            grid.push_back(cell);
+        }
+    }
+}
+
+void AssignEntitiesToGrid(std::vector<GridCell> &grid, entt::registry& registry, int cellSize) {
+
+    float cellWidth = (float)cellSize;
+
+    for (auto &cell : grid) {
+        cell.entities.clear();
+        cell.numEntities = 0;
+    }
+
+    const int numCols = (WINDOW_WIDTH + cellSize - 1) / cellSize;
+    const int numRows = (WINDOW_HEIGHT + cellSize - 1) / cellSize;
+    
+    auto view = registry.view<PositionComponent, CircleHitboxComponent>();
+    for (auto e : view) {
+        Vector2& pos = view.get<PositionComponent>(e).position;
+        CircleHitboxComponent& hitbox = view.get<CircleHitboxComponent>(e);
+
+        Rectangle aabb = hitbox.GetAABB(pos);
+
+        int leftCol = std::max(0, (int)(aabb.x / cellWidth));
+        int rightCol = std::min(numCols - 1, (int)((aabb.x + aabb.width) / cellWidth));
+        int topRow = std::max(0, (int)(aabb.y / cellWidth));
+        int bottomRow = std::min(numRows - 1, (int)((aabb.y + aabb.height) / cellWidth));
+
+        for (int i = leftCol; i<= rightCol; i++) {
+            for (int j = topRow; j<= bottomRow; j++) {
+                int cellIndex = j * numCols + i;
+                grid[cellIndex].entities.push_back(e);
+                grid[cellIndex].numEntities++;
+            }
+        }
+    }
+}
 
 void InitPlayer(entt::registry& registry, entt::entity e) {
     Vector2 center = {WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f};
@@ -65,6 +137,7 @@ void InitPlayer(entt::registry& registry, entt::entity e) {
     registry.emplace<MoveSpeedComponent>(e, moveSpeed);
     registry.emplace<SpriteComponent>(e, sprite, spriteSize);
     registry.emplace<HitFlashComponent>(e, false, 0.1f, 0.0f, RED);
+    registry.emplace<LevelComponent>(e, LevelComponent{1, 0.0f});
 }
 
 void InitEnemy(entt::registry& registry, entt::entity e, 
@@ -94,10 +167,19 @@ void InitGun (entt::registry& registry, entt::entity e) {
     registry.emplace<ProjectileComponent>(  e, 
                                             CircleHitboxComponent{5.0f}, 
                                             10.0f,
-                                            MoveSpeedComponent{400.0f}, 
-                                            2.0f,
-                                            PierceComponent{3, 0} );
+                                            MoveSpeedComponent{1000.0f}, 
+                                            10.0f,
+                                            PierceComponent{3, 0},
+                                            KnockbackComponent{500.0f} );
 }
+
+void InitXPOrb(entt::registry& registry, entt::entity e, Vector2 position, float xpAmount) {
+    registry.emplace<PositionComponent>(e, position);
+    registry.emplace<CircleHitboxComponent>(e, CircleHitboxComponent{10.0f});
+    registry.emplace<ColorComponent>(e, GREEN);
+    registry.emplace<XPOrbTag>(e, xpAmount);
+}
+
 
 // Handles player input and updates velocity component
 void PlayerInputSystem(entt::registry& registry) {
@@ -137,7 +219,7 @@ void PlayerMovementSystem(entt::registry& registry, float delta_time) {
 }
 
 void EnemyMovementSystem(entt::registry& registry, float delta_time) {
-    auto enemyView = registry.view<EnemyTag, PositionComponent, MoveSpeedComponent, AimDirectionComponent>();
+    auto enemyView = registry.view<EnemyTag, PositionComponent, VelocityComponent, MoveSpeedComponent, AimDirectionComponent>();
     auto playerView = registry.view<PlayerTag, PositionComponent>();
 
     // Get player position
@@ -148,14 +230,14 @@ void EnemyMovementSystem(entt::registry& registry, float delta_time) {
 
     for (auto e : enemyView) {
         Vector2& enemyPos = enemyView.get<PositionComponent>(e).position;
+        Vector2& enemyVelocity = enemyView.get<VelocityComponent>(e).velocity;
         float& speed = enemyView.get<MoveSpeedComponent>(e).speed;
         Vector2& aimDir = enemyView.get<AimDirectionComponent>(e).direction;
 
         aimDir = Vector2Normalize(Vector2Subtract(playerPos, enemyPos));
         Vector2 velocity = Vector2Scale(aimDir, speed);
 
-        enemyPos.x += velocity.x * delta_time;
-        enemyPos.y += velocity.y * delta_time;
+        enemyVelocity = velocity;
 
     }
 }
@@ -189,8 +271,18 @@ void EnemySpawnSystem(entt::registry& registry, float delta_time) {
     }
 }
 
-void DrawSystem(entt::registry& registry) {
+void DrawSystem(entt::registry& registry, int score) {
     auto view = registry.view<PositionComponent, SpriteComponent, ColorComponent>();
+
+    // Draw xp orbs TEMP
+    auto xpOrbView = registry.view<XPOrbTag, PositionComponent, CircleHitboxComponent, ColorComponent>();
+    for (auto e : xpOrbView) {
+        Vector2& pos = xpOrbView.get<PositionComponent>(e).position;
+        CircleHitboxComponent& circle = xpOrbView.get<CircleHitboxComponent>(e);
+        Color& color = xpOrbView.get<ColorComponent>(e).currentColor;
+        DrawCircleV(pos, circle.radius, color);
+    }
+    
     for (auto e : view) {
         Vector2& pos = view.get<PositionComponent>(e).position;
         Texture2D& sprite = view.get<SpriteComponent>(e).sprite;
@@ -228,6 +320,18 @@ void DrawSystem(entt::registry& registry) {
         Color& color = projectileView.get<ColorComponent>(e).currentColor;
         DrawCircleV(pos, circle.radius, color);
     }
+
+    auto playerView = registry.view<PlayerTag, HealthComponent, LevelComponent>();
+    for (auto e : playerView) {
+        HealthComponent& health = playerView.get<HealthComponent>(e);
+        LevelComponent& levelComp = playerView.get<LevelComponent>(e);
+        DrawText(TextFormat("Health: %.0f", health.health), 10, 40, 20, WHITE);
+        DrawText(TextFormat("Level: %d", levelComp.level), 10, 70, 20, WHITE);
+        DrawText(TextFormat("XP: %.0f / %.0f", levelComp.experience, levelComp.level * 100.0f), 10, 100, 20, WHITE);
+    }
+
+    // Draw Score
+    DrawText(TextFormat("Score: %d", score), 10, 10, 20, WHITE);
 }
 
 
@@ -276,7 +380,7 @@ void FireSystem(entt::registry& registry, float delta_time) {
         fireRateAccumulator += delta_time;
 
         if (fireRateAccumulator >= fireRate) {
-            fireRateAccumulator = 0.0f;
+            fireRateAccumulator -= fireRate;
 
             entt::entity projectile = registry.create();
 
@@ -295,99 +399,233 @@ void FireSystem(entt::registry& registry, float delta_time) {
             registry.emplace<ColorComponent>(projectile, ColorComponent{RED});
             registry.emplace<LifetimeComponent>(projectile, LifetimeComponent{ lifetime });
             registry.emplace<ContactDamageComponent>(projectile, ContactDamageComponent{ damage });
-            // Initialize projectile pierce using the weapon's projectile data
             registry.emplace<PierceComponent>(projectile, projectileData.projectilePierce);
+            registry.emplace<KnockbackComponent>(projectile, projectileData.projectileKnockback);
         }
     }
 }
 
-void HitSystem(entt::registry& registry) {
-    auto projectileView = registry.view<ProjectileTag, PositionComponent, CircleHitboxComponent, ContactDamageComponent>();
-    auto enemyView = registry.view<EnemyTag, PositionComponent, CircleHitboxComponent, HealthComponent, ContactDamageComponent, HitFlashComponent>();
+void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>& grid, int& score) {
+    // types of collisions:
+    // 1. projectile - enemy
+    // 2. enemy - player
+    // 3. player - xp orb
+
+    auto projectileView = registry.view<ProjectileTag, PositionComponent, VelocityComponent, CircleHitboxComponent, ContactDamageComponent, KnockbackComponent>();
+    auto enemyView = registry.view<EnemyTag, PositionComponent, VelocityComponent, CircleHitboxComponent, HealthComponent, ContactDamageComponent, HitFlashComponent>();
     auto playerView = registry.view<PlayerTag, PositionComponent, CircleHitboxComponent, HealthComponent, IFramesComponent, HitFlashComponent>();
-    
-    // Get player position
-    Vector2 playerPos = Vector2Zero();
-    for (auto e : playerView) {
-        playerPos = playerView.get<PositionComponent>(e).position;
-    }
+    auto xpOrbView = registry.view<XPOrbTag, PositionComponent, CircleHitboxComponent>();
 
-    // naive implementation, TODO: switch to uniform grid
-    for (auto proj : projectileView) {
-        Vector2& projPos = projectileView.get<PositionComponent>(proj).position;
-        CircleHitboxComponent& projHitbox = projectileView.get<CircleHitboxComponent>(proj);
-        float projDamage = projectileView.get<ContactDamageComponent>(proj).damage;
+    for (auto& cell : grid) {
+        for (auto entity : cell.entities) {
+            // 1. Projectile-Enemy collisions
+            if (projectileView.contains(entity)) {
+                Vector2& projPos = projectileView.get<PositionComponent>(entity).position;
+                CircleHitboxComponent& projHitbox = projectileView.get<CircleHitboxComponent>(entity);
+                float projDamage = projectileView.get<ContactDamageComponent>(entity).damage;
+                Vector2& projVelocity = projectileView.get<VelocityComponent>(entity).velocity;
+                KnockbackComponent& projKnockback = projectileView.get<KnockbackComponent>(entity);
 
-        for (auto enemy : enemyView) {
-            Vector2& enemyPos = enemyView.get<PositionComponent>(enemy).position;
-            CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(enemy);
-            HealthComponent& enemyHealth = enemyView.get<HealthComponent>(enemy);
-            HitFlashComponent& enemyHitFlash = enemyView.get<HitFlashComponent>(enemy);
-            PierceComponent& pc = registry.get<PierceComponent>(proj);
+                for (auto otherEntity : cell.entities) {
+                    if (otherEntity != entity && enemyView.contains(otherEntity)) {
+                        Vector2& enemyPos = enemyView.get<PositionComponent>(otherEntity).position;
+                        Vector2& enemyVelocity = enemyView.get<VelocityComponent>(otherEntity).velocity;
+                        CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(otherEntity);
+                        HealthComponent& enemyHealth = enemyView.get<HealthComponent>(otherEntity);
+                        HitFlashComponent& enemyHitFlash = enemyView.get<HitFlashComponent>(otherEntity);
+                        PierceComponent& pc = registry.get<PierceComponent>(entity);
 
-            float dist = Vector2Distance(projPos, enemyPos);
-            bool hasPierced = std::find(pc.piercedEntities.begin(), pc.piercedEntities.end(), enemy) != pc.piercedEntities.end();
-            if (dist <= (projHitbox.radius + enemyHitbox.radius) && !hasPierced) {
-                enemyHealth.health -= projDamage;
-                enemyHitFlash.isHit = true;
+                        float dist = Vector2Distance(projPos, enemyPos);
+                        bool hasPierced = std::find(pc.piercedEntities.begin(), pc.piercedEntities.end(), otherEntity) != pc.piercedEntities.end();
+                        if (dist <= (projHitbox.radius + enemyHitbox.radius) && !hasPierced) {
+                            enemyHealth.health -= projDamage;
+                            enemyHitFlash.isHit = true;
+                            
+                            score += 10;
+                            
+                            // Knockback effect
+                            enemyVelocity = Vector2Add(enemyVelocity, Vector2Scale(Vector2Normalize(projVelocity), projKnockback.force));
 
-                enemyPos = Vector2Add(enemyPos, Vector2Scale(Vector2Normalize(Vector2Subtract(enemyPos, playerPos)), 10.0f));
+                            pc.pierceAccumulator += 1;
+                            pc.piercedEntities.push_back(otherEntity);
+                            if (pc.pierceAccumulator >= pc.pierceCount) {
+                                registry.destroy(entity);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (playerView.contains(entity)) {
+                Vector2& playerPos = playerView.get<PositionComponent>(entity).position;
+                CircleHitboxComponent& playerHitbox = playerView.get<CircleHitboxComponent>(entity);
+                HealthComponent& playerHealth = playerView.get<HealthComponent>(entity);
+                IFramesComponent& playerIFrames = playerView.get<IFramesComponent>(entity);
+                HitFlashComponent& playerHitFlash = playerView.get<HitFlashComponent>(entity);
+
+                // 2. Enemy-Player collisions
+                for (auto otherEntity : cell.entities) {
+                    if (otherEntity != entity && enemyView.contains(otherEntity)) {
+                        Vector2& enemyPos = enemyView.get<PositionComponent>(otherEntity).position;
+                        CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(otherEntity);
+                        ContactDamageComponent& enemyDamage = enemyView.get<ContactDamageComponent>(otherEntity);
+
+                        float dist = Vector2Distance(playerPos, enemyPos);
+                        if (dist <= (playerHitbox.radius + enemyHitbox.radius) && !playerIFrames.isInvuln) {
+                            playerHealth.health -= enemyDamage.damage;
+                            playerHitFlash.isHit = true;
+                            playerIFrames.isInvuln = true;
+                            playerIFrames.invulnAccumulator = 0.0f;
+                            break;
+                        }
+                    }
+                }
                 
-                // Handle piercing: increment accumulator and only destroy when we've
-                // exceeded the configured pierce count. If no PierceComponent is
-                // present, default to destroying the projectile immediately.
-                
-                pc.pierceAccumulator += 1;
-                pc.piercedEntities.push_back(enemy);
-                if (pc.pierceAccumulator >= pc.pierceCount) {
-                    registry.destroy(proj);
-                    break; // projectile is destroyed, stop checking more enemies
+                // 3. Player-XPOrb collisions
+                for (auto otherEntity : cell.entities) {
+                    if (otherEntity != entity && xpOrbView.contains(otherEntity)) {
+                        Vector2& orbPos = xpOrbView.get<PositionComponent>(otherEntity).position;
+                        CircleHitboxComponent& orbHitbox = xpOrbView.get<CircleHitboxComponent>(otherEntity);
+                        XPOrbTag& xpOrbTag = xpOrbView.get<XPOrbTag>(otherEntity);
+
+                        float dist = Vector2Distance(playerPos, orbPos);
+                        if (dist <= (playerHitbox.radius + orbHitbox.radius)) {
+
+                            LevelComponent& levelComp = registry.get<LevelComponent>(entity);
+                            levelComp.experience += xpOrbTag.amount;
+
+                            float xpForNextLevel = levelComp.level * 100.0f;
+                            if (levelComp.experience >= xpForNextLevel) {
+                                levelComp.level += 1;
+                                levelComp.experience -= xpForNextLevel;
+                            }
+
+                            registry.destroy(otherEntity);
+                        }
+                    }
                 }
             }
         }
     }
-
-    for (auto player : playerView) {
-        Vector2& playerPos = playerView.get<PositionComponent>(player).position;
-        CircleHitboxComponent& playerHitbox = playerView.get<CircleHitboxComponent>(player);
-        HealthComponent& playerHealth = playerView.get<HealthComponent>(player);
-        IFramesComponent& playerIFrames = playerView.get<IFramesComponent>(player);
-        HitFlashComponent& playerHitFlash = playerView.get<HitFlashComponent>(player);
-
-        for (auto enemy : enemyView) {
-            Vector2& enemyPos = enemyView.get<PositionComponent>(enemy).position;
-            CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(enemy);
-            ContactDamageComponent& enemyDamage = enemyView.get<ContactDamageComponent>(enemy);
-
-            float dist = Vector2Distance(playerPos, enemyPos);
-            if (dist <= (playerHitbox.radius + enemyHitbox.radius) && !playerIFrames.isInvuln) {
-                playerHealth.health -= enemyDamage.damage;
-                playerHitFlash.isHit = true;
-                playerIFrames.isInvuln = true;
-                playerIFrames.invulnAccumulator = 0.0f;
-                break;
-            }
-        }
-    }
 }
 
-void DefeatedEnemiesSystem(entt::registry& registry) {
-    auto view = registry.view<EnemyTag, HealthComponent>();
+//     // Get player position
+//     Vector2 playerPos = Vector2Zero();
+//     for (auto e : playerView) {
+//         playerPos = playerView.get<PositionComponent>(e).position;
+//     }
+
+//     // Projectile-Enemy collisions
+//     for (auto proj : projectileView) {
+//         Vector2& projPos = projectileView.get<PositionComponent>(proj).position;
+//         CircleHitboxComponent& projHitbox = projectileView.get<CircleHitboxComponent>(proj);
+//         float projDamage = projectileView.get<ContactDamageComponent>(proj).damage;
+//         Vector2& projVelocity = projectileView.get<VelocityComponent>(proj).velocity;
+//         KnockbackComponent& projKnockback = projectileView.get<KnockbackComponent>(proj);
+
+//         for (auto enemy : enemyView) {
+//             Vector2& enemyPos = enemyView.get<PositionComponent>(enemy).position;
+//             Vector2& enemyVelocity = enemyView.get<VelocityComponent>(enemy).velocity;
+//             CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(enemy);
+//             HealthComponent& enemyHealth = enemyView.get<HealthComponent>(enemy);
+//             HitFlashComponent& enemyHitFlash = enemyView.get<HitFlashComponent>(enemy);
+//             PierceComponent& pc = registry.get<PierceComponent>(proj);
+
+//             float dist = Vector2Distance(projPos, enemyPos);
+//             bool hasPierced = std::find(pc.piercedEntities.begin(), pc.piercedEntities.end(), enemy) != pc.piercedEntities.end();
+//             if (dist <= (projHitbox.radius + enemyHitbox.radius) && !hasPierced) {
+//                 enemyHealth.health -= projDamage;
+//                 enemyHitFlash.isHit = true;
+                
+//                 score += 10;
+                
+//                 // Knockback effect
+//                 enemyVelocity = Vector2Add(enemyVelocity, Vector2Scale(Vector2Normalize(projVelocity), projKnockback.force));
+
+//                 pc.pierceAccumulator += 1;
+//                 pc.piercedEntities.push_back(enemy);
+//                 if (pc.pierceAccumulator >= pc.pierceCount) {
+//                     registry.destroy(proj);
+//                     break;
+//                 }
+//             }
+//         }
+//     }
+
+//     // Enemy-Player collisions
+//     for (auto player : playerView) {
+//         Vector2& playerPos = playerView.get<PositionComponent>(player).position;
+//         CircleHitboxComponent& playerHitbox = playerView.get<CircleHitboxComponent>(player);
+//         HealthComponent& playerHealth = playerView.get<HealthComponent>(player);
+//         IFramesComponent& playerIFrames = playerView.get<IFramesComponent>(player);
+//         HitFlashComponent& playerHitFlash = playerView.get<HitFlashComponent>(player);
+
+//         // Enemy-Player collisions
+//         for (auto enemy : enemyView) {
+//             Vector2& enemyPos = enemyView.get<PositionComponent>(enemy).position;
+//             CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(enemy);
+//             ContactDamageComponent& enemyDamage = enemyView.get<ContactDamageComponent>(enemy);
+
+//             float dist = Vector2Distance(playerPos, enemyPos);
+//             if (dist <= (playerHitbox.radius + enemyHitbox.radius) && !playerIFrames.isInvuln) {
+//                 playerHealth.health -= enemyDamage.damage;
+//                 playerHitFlash.isHit = true;
+//                 playerIFrames.isInvuln = true;
+//                 playerIFrames.invulnAccumulator = 0.0f;
+//                 break;
+//             }
+//         }
+
+//         for (auto xpOrb : xpOrbView) {
+//             Vector2& orbPos = xpOrbView.get<PositionComponent>(xpOrb).position;
+//             CircleHitboxComponent& orbHitbox = xpOrbView.get<CircleHitboxComponent>(xpOrb);
+//             XPOrbTag& xpOrbTag = xpOrbView.get<XPOrbTag>(xpOrb);
+
+//             float dist = Vector2Distance(playerPos, orbPos);
+//             if (dist <= (playerHitbox.radius + orbHitbox.radius)) {
+
+//                 LevelComponent& levelComp = registry.get<LevelComponent>(player);
+//                 levelComp.experience += xpOrbTag.amount;
+
+//                 float xpForNextLevel = levelComp.level * 100.0f;
+//                 if (levelComp.experience >= xpForNextLevel) {
+//                     levelComp.level += 1;
+//                     levelComp.experience -= xpForNextLevel;
+//                 }
+
+//                 registry.destroy(xpOrb);
+//             }
+//         }
+//     }
+// }
+
+void DefeatedEnemiesSystem(entt::registry& registry, int& score) {
+    auto view = registry.view<EnemyTag, HealthComponent, PositionComponent>();
     for (auto e : view) {
         HealthComponent& health = view.get<HealthComponent>(e);
         if (health.health <= 0) {
+            score += 100;
+
+            entt::entity xpOrb = registry.create();
+            Vector2 position = view.get<PositionComponent>(e).position;
+            InitXPOrb(registry, xpOrb, position, 20.0f);
+
             registry.destroy(e);
+
+            
         }
     }
 }
 
-void DefeatedPlayerSystem(entt::registry& registry) {
+void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused) {
     auto view = registry.view<PlayerTag, HealthComponent>();
     auto weaponView = registry.view<WeaponTag>();
     for (auto e : view) {
         HealthComponent& health = view.get<HealthComponent>(e);
         if (health.health <= 0) {
             registry.destroy(e);
+            isPaused = true;
         }
     }
 }
@@ -454,39 +692,52 @@ int main() {
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Raylib Survivors");
     SetTargetFPS(FPS);
 
+    std::vector<GridCell> grid;
+    InitGrid(grid, 80);
+
     entt::registry registry;
     entt::entity player_entity = registry.create();
     InitPlayer(registry, player_entity);
 
-    entt::entity enemy_entity = registry.create();
-    InitEnemy(registry, enemy_entity, Vector2{300.0f, 300.0f}, 50, 100.0f);
-
     entt::entity gun_entity = registry.create();
     InitGun(registry, gun_entity);
+
+
+    int score = 0;
+    bool isPaused = false;
 
     while (!WindowShouldClose()) {
         float delta_time = GetFrameTime();
 
+        if (!isPaused) {
+            AssignEntitiesToGrid(grid, registry, 80);
 
-        PlayerInputSystem(registry);
+            PlayerInputSystem(registry);
+            PlayerMovementSystem(registry, delta_time);
+            EnemyMovementSystem(registry, delta_time);
 
-        PlayerMovementSystem(registry, delta_time);
-        EnemyMovementSystem(registry, delta_time);
+            EnemySpawnSystem(registry, delta_time);
 
-        EnemySpawnSystem(registry, delta_time);
+            AimSystem(registry);
+            FireSystem(registry, delta_time);
+            HitSystem(registry, delta_time, grid, score);
 
-        AimSystem(registry);
-        FireSystem(registry, delta_time);
-        HitSystem(registry);
+            DefeatedEnemiesSystem(registry, score);
+            AccumulatorSystems(registry, delta_time);
 
-        DefeatedEnemiesSystem(registry);
-        AccumulatorSystems(registry, delta_time);
-
-        DefeatedPlayerSystem(registry);
+            DefeatedPlayerSystem(registry, isPaused);
+        }
 
         BeginDrawing();
         ClearBackground(BLACK);
-        DrawSystem(registry);
+        DrawSystem(registry, score);
+
+        // draw grid cells if it contains entities
+        // for (const auto& cell : grid) {
+        //     if (cell.numEntities > 0) {
+        //         DrawRectangleLines(cell.x * cell.width, cell.y * cell.width, cell.width, cell.width, WHITE);
+        //     }
+        // }
         EndDrawing();
     }
 
