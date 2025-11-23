@@ -2,28 +2,43 @@
 #include <raylib.h>
 #include <raymath.h>
 #include "entt.hpp"
+#include <string>
+#include <set>
+#include <iostream>
 
 const int WINDOW_WIDTH = 1280;
 const int WINDOW_HEIGHT = 720;
 const float FPS = 60.0f;
-const float TIMESTEP = 1 / FPS; 
+const float TIMESTEP = 1.0f / FPS; 
 
 // ik these tags are not very ecs-y but to make things easier to manage HAHAHAH
 struct PlayerTag {/* If an entity has this component, it is a player */};
 struct EnemyTag {/* If an entity has this component, it is an enemy */};
-struct WeaponTag {/* If an entity has this component, it is a weapon */};
+struct WeaponTag { std::string name;/* If an entity has this component, it is a weapon */};
 struct ProjectileTag { bool isPlayerProjectile;/* If an entity has this component, it is a projectile */};
 struct XPOrbTag { float amount; /* If an entity has this component, it is an XP orb */};
 
-struct HealthComponent { float health; };
+enum class LevelUpOptions {
+    NONE = 0,
+    PLAYER_HEALTH = 1,
+    PLAYER_MOVESPEED = 2,
+    WEAPON_FIRERATE = 3,
+    WEAPON_DAMAGE = 4,
+    WEAPON_PIERCE = 5
+};
+struct ChoiceComponent { LevelUpOptions choice; Rectangle rect; std::string description; 
+        
+};
+
+struct HealthComponent { float currentHealth; float maxHealth; };
 struct IFramesComponent { bool isInvuln; float invulnTime; float invulnAccumulator; };
-struct LevelComponent { int level; float experience; };
+struct LevelComponent { int level; float experience; bool justLeveled = false; };
 
 // Basic components for position, velocity, and movement
 struct PositionComponent { Vector2 position; };
 struct VelocityComponent { Vector2 velocity; };
 struct MoveSpeedComponent { float speed; };
-
+struct MassComponent { float mass; float inverseMass; };
 // Shape components for drawing
 struct RectangleHitboxComponent { Vector2 size; };
 struct CircleHitboxComponent { 
@@ -38,7 +53,7 @@ struct CircleHitboxComponent {
     }
 };
 
-struct ContactDamageComponent { float damage; };
+struct ContactDamageComponent { float damage; float originalDamage; };
 
 // Drawing related components
 struct SpriteComponent { Texture2D sprite; Vector2 spriteSize; };
@@ -52,15 +67,6 @@ struct LifetimeComponent { float remaining; };
 struct PierceComponent { int pierceCount; int pierceAccumulator; std::vector<entt::entity> piercedEntities; };
 struct KnockbackComponent { float force; };
 
-// Projectile data for spawning projectiles (used by weapons)
-struct ProjectileComponent {    CircleHitboxComponent projectileHitbox; 
-                                ContactDamageComponent projectileDamage;
-                                MoveSpeedComponent projectileSpeed; 
-                                LifetimeComponent projectileLifetime;
-                                PierceComponent projectilePierce;
-                                KnockbackComponent projectileKnockback;
-                            };
-
 struct GridCell {
     std::vector<entt::entity> entities;
     int x, y;
@@ -68,15 +74,19 @@ struct GridCell {
     int width;
 };
 
-void InitGrid(std::vector<GridCell> &grid, int cellSize) {
-    for(GridCell& cell : grid) {
-        cell.entities.clear();
-        cell.numEntities = 0;
-    }
+bool IsPlayerLevelledUp(entt::registry& registry);
 
-    for(int y = 0; y < WINDOW_HEIGHT; y += cellSize) {
-        for(int x = 0; x < WINDOW_WIDTH; x += cellSize) {
+void InitGrid(std::vector<GridCell> &grid, int cellSize) {
+    grid.clear();
+    const int numCols = (WINDOW_WIDTH + cellSize - 1) / cellSize;
+    const int numRows = (WINDOW_HEIGHT + cellSize - 1) / cellSize;
+    grid.reserve(numCols * numRows);
+
+    for (int y = 0; y < WINDOW_HEIGHT; y += cellSize) {
+        for (int x = 0; x < WINDOW_WIDTH; x += cellSize) {
             GridCell cell;
+            cell.entities.clear();
+            cell.numEntities = 0;
             cell.x = x / cellSize;
             cell.y = y / cellSize;
             cell.width = cellSize;
@@ -97,12 +107,20 @@ void AssignEntitiesToGrid(std::vector<GridCell> &grid, entt::registry& registry,
     const int numCols = (WINDOW_WIDTH + cellSize - 1) / cellSize;
     const int numRows = (WINDOW_HEIGHT + cellSize - 1) / cellSize;
     
-    auto view = registry.view<PositionComponent, CircleHitboxComponent>();
+    auto view = registry.view<PositionComponent, VelocityComponent, CircleHitboxComponent>();
     for (auto e : view) {
         Vector2& pos = view.get<PositionComponent>(e).position;
         CircleHitboxComponent& hitbox = view.get<CircleHitboxComponent>(e);
+        Vector2& vel = view.get<VelocityComponent>(e).velocity;
 
-        Rectangle aabb = hitbox.GetAABB(pos);
+        Vector2 endPos = { pos.x + vel.x * TIMESTEP, pos.y + vel.y * TIMESTEP };
+
+        Rectangle aabb = {
+            std::min(pos.x, endPos.x) - hitbox.radius,
+            std::min(pos.y, endPos.y) - hitbox.radius,
+            std::abs(endPos.x - pos.x) + hitbox.radius * 2,
+            std::abs(endPos.y - pos.y) + hitbox.radius * 2
+        };
 
         int leftCol = std::max(0, (int)(aabb.x / cellWidth));
         int rightCol = std::min(numCols - 1, (int)((aabb.x + aabb.width) / cellWidth));
@@ -119,65 +137,74 @@ void AssignEntitiesToGrid(std::vector<GridCell> &grid, entt::registry& registry,
     }
 }
 
-void InitPlayer(entt::registry& registry, entt::entity e) {
+void InitPlayer(entt::registry& registry, entt::entity e, const Texture2D &playerTexture) {
     Vector2 center = {WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f};
     float health = 100.0f;
     float moveSpeed = 200.0f;
-    Texture2D sprite = LoadTexture("assets/player.png");
     Vector2 spriteSize = {50, 50};
-    
+        
     registry.emplace<PlayerTag>(e);
     registry.emplace<IFramesComponent>(e, IFramesComponent{false, 0.5f, 0.0f});
     registry.emplace<CircleHitboxComponent>(e, CircleHitboxComponent{20.0f});
-    registry.emplace<HealthComponent>(e, health);
+    registry.emplace<HealthComponent>(e, HealthComponent{health, health});
     registry.emplace<PositionComponent>(e, center);
     registry.emplace<VelocityComponent>(e, Vector2Zero());
     registry.emplace<AimDirectionComponent>(e, Vector2Zero());
     registry.emplace<ColorComponent>(e, WHITE);
     registry.emplace<MoveSpeedComponent>(e, moveSpeed);
-    registry.emplace<SpriteComponent>(e, sprite, spriteSize);
+    registry.emplace<SpriteComponent>(e, playerTexture, spriteSize);
     registry.emplace<HitFlashComponent>(e, false, 0.1f, 0.0f, RED);
-    registry.emplace<LevelComponent>(e, LevelComponent{1, 0.0f});
+    registry.emplace<LevelComponent>(e, LevelComponent{1, 0.0f, false});
 }
 
 void InitEnemy(entt::registry& registry, entt::entity e, 
+                const Texture2D &enemyTexture,
                 Vector2 position = {100.0f, 100.0f}, 
-                float health = 50, 
+                float health = 10.0f, 
                 float moveSpeed = 100.0f) {
 
     registry.emplace<EnemyTag>(e);
-    registry.emplace<HealthComponent>(e, health);
+    registry.emplace<HealthComponent>(e, HealthComponent{health, health});
     registry.emplace<ContactDamageComponent>(e, 10.0f);
     registry.emplace<PositionComponent>(e, position);
     registry.emplace<VelocityComponent>(e, Vector2Zero());
+    registry.emplace<MassComponent>(e, 1.0f, 1.0f);
     registry.emplace<AimDirectionComponent>(e, Vector2Zero());
     registry.emplace<ColorComponent>(e, YELLOW);
     registry.emplace<MoveSpeedComponent>(e, moveSpeed);
-    registry.emplace<CircleHitboxComponent>(e, CircleHitboxComponent{20.0f});
+    registry.emplace<CircleHitboxComponent>(e, 20.0f);
     registry.emplace<HitFlashComponent>(e, false, 0.1f, 0.0f, RED);
-    
-    registry.emplace<SpriteComponent>(e, LoadTexture("assets/enemy.png"), Vector2{40, 40});
+    registry.emplace<SpriteComponent>(e, enemyTexture, Vector2{40, 40});
 }
 
 void InitGun (entt::registry& registry, entt::entity e) {
-    registry.emplace<WeaponTag>(e);
+    registry.emplace<WeaponTag>(e, "Gun");
     registry.emplace<PositionComponent>(e, Vector2Zero());
     registry.emplace<AimDirectionComponent>(e, Vector2Zero());
-    registry.emplace<FireRateComponent>(e, 0.3f, 0.0f); 
-    registry.emplace<ProjectileComponent>(  e, 
-                                            CircleHitboxComponent{5.0f}, 
-                                            10.0f,
-                                            MoveSpeedComponent{1000.0f}, 
-                                            10.0f,
-                                            PierceComponent{3, 0},
-                                            KnockbackComponent{500.0f} );
+    registry.emplace<FireRateComponent>(e, 1.0f, 0.0f); 
+    registry.emplace<CircleHitboxComponent>(e, 5.0f);
+    registry.emplace<ContactDamageComponent>(e, 10.0f);
+    registry.emplace<MoveSpeedComponent>(e, 2000.0f);
+    registry.emplace<LifetimeComponent>(e, 10.0f);
+    registry.emplace<PierceComponent>(e, 1, 0);
+    registry.emplace<MassComponent>(e, 0.0f, 0.0f);
 }
 
 void InitXPOrb(entt::registry& registry, entt::entity e, Vector2 position, float xpAmount) {
     registry.emplace<PositionComponent>(e, position);
-    registry.emplace<CircleHitboxComponent>(e, CircleHitboxComponent{10.0f});
-    registry.emplace<ColorComponent>(e, GREEN);
+    registry.emplace<CircleHitboxComponent>(e, 10.0f);
+    registry.emplace<ColorComponent>(e, Color({0, 200, 255, 255}));
     registry.emplace<XPOrbTag>(e, xpAmount);
+    registry.emplace<VelocityComponent>(e, Vector2Zero());
+}
+
+void InitChoices(entt::registry& registry) {
+    entt::entity choice1 = registry.create();
+    registry.emplace<ChoiceComponent>(choice1, LevelUpOptions::NONE, Rectangle{WINDOW_WIDTH / 2 - 350, WINDOW_HEIGHT / 2 - 100, 700, 50}, "");
+    entt::entity choice2 = registry.create();
+    registry.emplace<ChoiceComponent>(choice2, LevelUpOptions::NONE, Rectangle{WINDOW_WIDTH / 2 - 350, WINDOW_HEIGHT / 2, 700, 50}, "");
+    entt::entity choice3 = registry.create();
+    registry.emplace<ChoiceComponent>(choice3, LevelUpOptions::NONE, Rectangle{WINDOW_WIDTH / 2 - 350, WINDOW_HEIGHT / 2 + 100, 700, 50}, "" );
 }
 
 
@@ -242,37 +269,39 @@ void EnemyMovementSystem(entt::registry& registry, float delta_time) {
     }
 }
 
-void EnemySpawnSystem(entt::registry& registry, float delta_time) {
+void EnemySpawnSystem(entt::registry& registry, float delta_time, const Texture2D &enemyTexture, float timeElapsed) {
     static float spawnAccumulator = 0.0f;
-    static float spawnInterval = 0.5f;
+
+    float baseSpawnRate = 0.5f;
+    float baseSpawnGrowthPerSecond = 0.01f;   
+    float enemiesPerSecond = baseSpawnRate + baseSpawnGrowthPerSecond * timeElapsed;
+    float spawnInterval = 1.0f / enemiesPerSecond;
+
+    float healthGrowthPerSecond = 0.5f;
+    float moveSpeedGrowthPerSecond = 0.05f;
+    float enemyHealth = 10.0f + healthGrowthPerSecond * timeElapsed;
+    float enemyMoveSpeed = 25.0f + moveSpeedGrowthPerSecond * timeElapsed;
 
     spawnAccumulator += delta_time;
-    if (spawnAccumulator >= spawnInterval) {
-        spawnAccumulator = 0.0f;
+    while (spawnAccumulator >= spawnInterval) { 
+        spawnAccumulator -= spawnInterval;
 
         entt::entity enemy_entity = registry.create();
         Vector2 spawnPosition;
         int edge = GetRandomValue(0, 3);
         switch (edge) {
-            case 0: 
-                spawnPosition = { (float)GetRandomValue(0, WINDOW_WIDTH), 0.0f };
-                break;
-            case 1: 
-                spawnPosition = { (float)GetRandomValue(0, WINDOW_WIDTH), (float)WINDOW_HEIGHT };
-                break;
-            case 2: 
-                spawnPosition = { 0.0f, (float)GetRandomValue(0, WINDOW_HEIGHT) };
-                break;
-            default:
-                spawnPosition = { (float)WINDOW_WIDTH, (float)GetRandomValue(0, WINDOW_HEIGHT) };
-                break;
+            case 0: spawnPosition = { (float)GetRandomValue(0, WINDOW_WIDTH), 0.0f }; break;
+            case 1: spawnPosition = { (float)GetRandomValue(0, WINDOW_WIDTH), (float)WINDOW_HEIGHT }; break;
+            case 2: spawnPosition = { 0.0f, (float)GetRandomValue(0, WINDOW_HEIGHT) }; break;
+            case 3: spawnPosition = { (float)WINDOW_WIDTH, (float)GetRandomValue(0, WINDOW_HEIGHT) }; break;
         }
-        InitEnemy(registry, enemy_entity, spawnPosition, 50, 100.0f);
+        InitEnemy(registry, enemy_entity, enemyTexture, spawnPosition, enemyHealth, enemyMoveSpeed);
     }
 }
 
 void DrawSystem(entt::registry& registry, int score) {
     auto view = registry.view<PositionComponent, SpriteComponent, ColorComponent>();
+    auto choiceView = registry.view<ChoiceComponent>();
 
     // Draw xp orbs TEMP
     auto xpOrbView = registry.view<XPOrbTag, PositionComponent, CircleHitboxComponent, ColorComponent>();
@@ -282,7 +311,7 @@ void DrawSystem(entt::registry& registry, int score) {
         Color& color = xpOrbView.get<ColorComponent>(e).currentColor;
         DrawCircleV(pos, circle.radius, color);
     }
-    
+
     for (auto e : view) {
         Vector2& pos = view.get<PositionComponent>(e).position;
         Texture2D& sprite = view.get<SpriteComponent>(e).sprite;
@@ -294,7 +323,7 @@ void DrawSystem(entt::registry& registry, int score) {
         Vector2 origin = { spriteSize.x * 0.5f, spriteSize.y * 0.5f };
 
         float angle = 0.0f;
-        // If entity has an AimDirectionComponent, use it to compute rotation
+
         if (auto aim = registry.try_get<AimDirectionComponent>(e)) {
             angle = atan2f(aim->direction.y, aim->direction.x) * RAD2DEG;
         }
@@ -321,15 +350,48 @@ void DrawSystem(entt::registry& registry, int score) {
         DrawCircleV(pos, circle.radius, color);
     }
 
+    auto healthView = registry.view<HealthComponent, PositionComponent, CircleHitboxComponent>();
+    for (auto e : healthView) {
+        HealthComponent& health = healthView.get<HealthComponent>(e);
+        Vector2& pos = healthView.get<PositionComponent>(e).position;
+        CircleHitboxComponent& circle = healthView.get<CircleHitboxComponent>(e);
+        DrawRectangleV( Vector2{ pos.x - circle.radius, pos.y - circle.radius - 10 },
+                        Vector2{ circle.radius * 2 * (health.currentHealth / health.maxHealth), 5 }, GREEN);
+    }
+
     auto playerView = registry.view<PlayerTag, HealthComponent, LevelComponent>();
     for (auto e : playerView) {
         HealthComponent& health = playerView.get<HealthComponent>(e);
         LevelComponent& levelComp = playerView.get<LevelComponent>(e);
-        DrawText(TextFormat("Health: %.0f", health.health), 10, 40, 20, WHITE);
+        DrawText(TextFormat("Health: %.0f/%.0f", health.currentHealth, health.maxHealth), 10, 40, 20, WHITE);
         DrawText(TextFormat("Level: %d", levelComp.level), 10, 70, 20, WHITE);
         DrawText(TextFormat("XP: %.0f / %.0f", levelComp.experience, levelComp.level * 100.0f), 10, 100, 20, WHITE);
     }
 
+    // Draw Choices
+    if (IsPlayerLevelledUp(registry)) {
+            for (auto e : choiceView) {
+            ChoiceComponent& choice = choiceView.get<ChoiceComponent>(e);
+            Vector2 mousePos = GetMousePosition();
+            Color rectColor = LIGHTGRAY;
+            if (CheckCollisionPointRec(mousePos, choice.rect)) {
+                rectColor = GRAY;
+                if(IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+                    rectColor = YELLOW;
+                }
+            } else {
+                rectColor = LIGHTGRAY;
+            }
+            DrawRectangleRec(choice.rect, rectColor);
+
+            int fontSize = 20;
+            int textWidth = MeasureText(choice.description.c_str(), fontSize);
+            DrawText(choice.description.c_str(), choice.rect.x + (choice.rect.width - textWidth) / 2, choice.rect.y + (choice.rect.height - fontSize) / 2, fontSize, BLACK);
+        }
+    }
+    
+
+    
     // Draw Score
     DrawText(TextFormat("Score: %d", score), 10, 10, 20, WHITE);
 }
@@ -369,13 +431,20 @@ void AimSystem(entt::registry& registry) {
 }
 
 void FireSystem(entt::registry& registry, float delta_time) {
-    auto view = registry.view<FireRateComponent, AimDirectionComponent, PositionComponent, ProjectileComponent>();
+    auto view = registry.view<  FireRateComponent, AimDirectionComponent, PositionComponent, 
+                                CircleHitboxComponent, ContactDamageComponent, MoveSpeedComponent,
+                                LifetimeComponent, PierceComponent, MassComponent>();
     for (auto e : view) {
         float& fireRate = view.get<FireRateComponent>(e).fireRate;
         float& fireRateAccumulator = view.get<FireRateComponent>(e).fireRateAccumulator;
         Vector2& aimDir = view.get<AimDirectionComponent>(e).direction;
         Vector2& position = view.get<PositionComponent>(e).position;
-        ProjectileComponent& projectileData = view.get<ProjectileComponent>(e);
+
+        CircleHitboxComponent& projHitbox = view.get<CircleHitboxComponent>(e);
+        float& projDamage = view.get<ContactDamageComponent>(e).damage;
+        float& projSpeed = view.get<MoveSpeedComponent>(e).speed;
+        LifetimeComponent& projLifetime = view.get<LifetimeComponent>(e);
+        PierceComponent& projPierce = view.get<PierceComponent>(e);
 
         fireRateAccumulator += delta_time;
 
@@ -384,9 +453,9 @@ void FireSystem(entt::registry& registry, float delta_time) {
 
             entt::entity projectile = registry.create();
 
-            float projectileSpeed = projectileData.projectileSpeed.speed;
-            float lifetime = projectileData.projectileLifetime.remaining;
-            float damage = projectileData.projectileDamage.damage;
+            float projectileSpeed = projSpeed;
+            float projLifetimeRemaining = projLifetime.remaining;
+            float projDamageValue = projDamage;
 
             Vector2 projectileVelocity = Vector2Scale(aimDir, projectileSpeed);
             Vector2 projectilePosition = position;
@@ -394,24 +463,83 @@ void FireSystem(entt::registry& registry, float delta_time) {
             registry.emplace<ProjectileTag>(projectile, true);
             registry.emplace<PositionComponent>(projectile, projectilePosition);
             registry.emplace<VelocityComponent>(projectile, projectileVelocity);
-            registry.emplace<CircleHitboxComponent>(projectile, CircleHitboxComponent{projectileData.projectileHitbox});
+            registry.emplace<CircleHitboxComponent>(projectile, CircleHitboxComponent{projHitbox.radius});
             registry.emplace<MoveSpeedComponent>(projectile, MoveSpeedComponent{projectileSpeed});
             registry.emplace<ColorComponent>(projectile, ColorComponent{RED});
-            registry.emplace<LifetimeComponent>(projectile, LifetimeComponent{ lifetime });
-            registry.emplace<ContactDamageComponent>(projectile, ContactDamageComponent{ damage });
-            registry.emplace<PierceComponent>(projectile, projectileData.projectilePierce);
-            registry.emplace<KnockbackComponent>(projectile, projectileData.projectileKnockback);
+            registry.emplace<LifetimeComponent>(projectile, LifetimeComponent{ projLifetimeRemaining });
+            registry.emplace<ContactDamageComponent>(projectile, projDamageValue);
+            registry.emplace<PierceComponent>(projectile, projPierce);
+            registry.emplace<MassComponent>(projectile, 0.0f, 0.0f);
         }
     }
 }
 
-void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>& grid, int& score) {
+
+void Collide(entt::registry &registry, entt::entity &a, entt::entity &b, float elasticity = 1.0f) {
+    Vector2 aPos = registry.get<PositionComponent>(a).position;
+    Vector2 aVel = registry.get<VelocityComponent>(a).velocity;
+    float aInverseMass = registry.get<MassComponent>(a).inverseMass;
+    Vector2 bPos = registry.get<PositionComponent>(b).position;
+    Vector2 bVel = registry.get<VelocityComponent>(b).velocity;
+    float bInverseMass = registry.get<MassComponent>(b).inverseMass;
+
+    Vector2 normal = Vector2Subtract(bPos, aPos);
+    Vector2 relativeVelocity = Vector2Subtract(bVel, aVel);
+    float result = Vector2DotProduct(relativeVelocity, normal);
+    if(result < 0) {
+        Vector2 n = Vector2Normalize(normal);
+        float r = Vector2DotProduct(relativeVelocity, n);
+
+        float impulse = - (1 + elasticity) * r / ((Vector2Length(n)) * (aInverseMass + bInverseMass));
+        bVel = Vector2Add(bVel, Vector2Scale(n, impulse * bInverseMass));
+        aVel = Vector2Subtract(aVel, Vector2Scale(n, impulse * aInverseMass));
+        registry.get<VelocityComponent>(b).velocity = bVel;
+        registry.get<VelocityComponent>(a).velocity = aVel;
+    }
+}
+
+bool SweptCollision(entt::registry &registry, entt::entity &a, entt::entity &b, float maxTime) {
+    // taken from https://stackoverflow.com/questions/1073336/circle-line-segment-collision-detection-algorithm
+    
+    const Vector2 aPos = registry.get<PositionComponent>(a).position;
+    const Vector2 aVel = registry.get<VelocityComponent>(a).velocity;
+    const float aRadius = registry.get<CircleHitboxComponent>(a).radius;
+
+    const Vector2 bPos = registry.get<PositionComponent>(b).position;
+    const Vector2 bVel = registry.get<VelocityComponent>(b).velocity;
+    const float bRadius = registry.get<CircleHitboxComponent>(b).radius;
+
+    Vector2 relPos = Vector2Subtract(aPos, bPos);
+    Vector2 relVel = Vector2Subtract(aVel, bVel); 
+
+    float R = aRadius + bRadius;
+    
+    if (Vector2LengthSqr(relPos) <= R * R) return true;
+
+    float a_coeff = Vector2DotProduct(relVel, relVel);
+    if (a_coeff <= 0.0001f) return false;
+
+    float b_coeff = 2.0f * Vector2DotProduct(relPos, relVel);
+    float c_coeff = Vector2DotProduct(relPos, relPos) - R * R;
+
+    float discriminant = b_coeff * b_coeff - 4.0f * a_coeff * c_coeff;
+    if (discriminant < 0.0f) return false;
+
+    float sqrtD = sqrtf(discriminant);
+    float tEnter = (-b_coeff - sqrtD) / (2.0f * a_coeff);
+    float tExit  = (-b_coeff + sqrtD) / (2.0f * a_coeff);
+
+    if (tEnter >= 0.0f && tEnter <= maxTime) return true;
+    return false;
+}
+
+void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>& grid, int& score, bool& isPaused) {
     // types of collisions:
     // 1. projectile - enemy
     // 2. enemy - player
     // 3. player - xp orb
 
-    auto projectileView = registry.view<ProjectileTag, PositionComponent, VelocityComponent, CircleHitboxComponent, ContactDamageComponent, KnockbackComponent>();
+    auto projectileView = registry.view<ProjectileTag, PositionComponent, VelocityComponent, CircleHitboxComponent, ContactDamageComponent>();
     auto enemyView = registry.view<EnemyTag, PositionComponent, VelocityComponent, CircleHitboxComponent, HealthComponent, ContactDamageComponent, HitFlashComponent>();
     auto playerView = registry.view<PlayerTag, PositionComponent, CircleHitboxComponent, HealthComponent, IFramesComponent, HitFlashComponent>();
     auto xpOrbView = registry.view<XPOrbTag, PositionComponent, CircleHitboxComponent>();
@@ -424,7 +552,6 @@ void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>
                 CircleHitboxComponent& projHitbox = projectileView.get<CircleHitboxComponent>(entity);
                 float projDamage = projectileView.get<ContactDamageComponent>(entity).damage;
                 Vector2& projVelocity = projectileView.get<VelocityComponent>(entity).velocity;
-                KnockbackComponent& projKnockback = projectileView.get<KnockbackComponent>(entity);
 
                 for (auto otherEntity : cell.entities) {
                     if (otherEntity != entity && enemyView.contains(otherEntity)) {
@@ -435,17 +562,15 @@ void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>
                         HitFlashComponent& enemyHitFlash = enemyView.get<HitFlashComponent>(otherEntity);
                         PierceComponent& pc = registry.get<PierceComponent>(entity);
 
-                        float dist = Vector2Distance(projPos, enemyPos);
+                        //float dist = Vector2Distance(projPos, enemyPos);
                         bool hasPierced = std::find(pc.piercedEntities.begin(), pc.piercedEntities.end(), otherEntity) != pc.piercedEntities.end();
-                        if (dist <= (projHitbox.radius + enemyHitbox.radius) && !hasPierced) {
-                            enemyHealth.health -= projDamage;
+                        if (SweptCollision(registry, entity, otherEntity, delta_time) && !hasPierced) {
+                            Collide(registry, entity, otherEntity);
+                            enemyHealth.currentHealth -= projDamage;
                             enemyHitFlash.isHit = true;
                             
-                            score += 10;
+                            score += projDamage;
                             
-                            // Knockback effect
-                            enemyVelocity = Vector2Add(enemyVelocity, Vector2Scale(Vector2Normalize(projVelocity), projKnockback.force));
-
                             pc.pierceAccumulator += 1;
                             pc.piercedEntities.push_back(otherEntity);
                             if (pc.pierceAccumulator >= pc.pierceCount) {
@@ -473,7 +598,7 @@ void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>
 
                         float dist = Vector2Distance(playerPos, enemyPos);
                         if (dist <= (playerHitbox.radius + enemyHitbox.radius) && !playerIFrames.isInvuln) {
-                            playerHealth.health -= enemyDamage.damage;
+                            playerHealth.currentHealth -= enemyDamage.damage;
                             playerHitFlash.isHit = true;
                             playerIFrames.isInvuln = true;
                             playerIFrames.invulnAccumulator = 0.0f;
@@ -499,9 +624,34 @@ void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>
                             if (levelComp.experience >= xpForNextLevel) {
                                 levelComp.level += 1;
                                 levelComp.experience -= xpForNextLevel;
+                                levelComp.justLeveled = true;
+                                isPaused = true; 
                             }
 
                             registry.destroy(otherEntity);
+                        }
+                    }
+                }
+            }
+            
+            if (enemyView.contains(entity)) {
+                // prevent enemies from overlapping
+                Vector2& enemyPos = enemyView.get<PositionComponent>(entity).position;
+                CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(entity);
+                Vector2& enemyVelocity = enemyView.get<VelocityComponent>(entity).velocity;
+
+                for (auto otherEntity : cell.entities) {
+                    if (otherEntity != entity && enemyView.contains(otherEntity)) {
+                        Vector2& otherEnemyPos = enemyView.get<PositionComponent>(otherEntity).position;
+                        CircleHitboxComponent& otherEnemyHitbox = enemyView.get<CircleHitboxComponent>(otherEntity);
+
+                        float dist = Vector2Distance(enemyPos, otherEnemyPos);
+                        float minDist = enemyHitbox.radius + otherEnemyHitbox.radius;
+                        if (dist < minDist && dist > 0.0f) {
+                            Vector2 pushDir = Vector2Normalize(Vector2Subtract(enemyPos, otherEnemyPos));
+                            float pushAmount = minDist - dist;
+                            enemyPos = Vector2Add(enemyPos, Vector2Scale(pushDir, pushAmount * 0.5f));
+                            otherEnemyPos = Vector2Subtract(otherEnemyPos, Vector2Scale(pushDir, pushAmount * 0.5f));
                         }
                     }
                 }
@@ -604,15 +754,15 @@ void DefeatedEnemiesSystem(entt::registry& registry, int& score) {
     auto view = registry.view<EnemyTag, HealthComponent, PositionComponent>();
     for (auto e : view) {
         HealthComponent& health = view.get<HealthComponent>(e);
-        if (health.health <= 0) {
+        if (health.currentHealth <= 0) {
             score += 100;
 
             entt::entity xpOrb = registry.create();
             Vector2 position = view.get<PositionComponent>(e).position;
-            InitXPOrb(registry, xpOrb, position, 20.0f);
+            InitXPOrb(registry, xpOrb, position, 50.0f);
 
             registry.destroy(e);
-
+    
             
         }
     }
@@ -623,7 +773,7 @@ void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused) {
     auto weaponView = registry.view<WeaponTag>();
     for (auto e : view) {
         HealthComponent& health = view.get<HealthComponent>(e);
-        if (health.health <= 0) {
+        if (health.currentHealth <= 0) {
             registry.destroy(e);
             isPaused = true;
         }
@@ -672,11 +822,107 @@ void AccumulatorSystems (entt::registry& registry, float delta_time) {
     }
 }
 
-void UnloadResources(entt::registry& registry) {
-    auto view = registry.view<SpriteComponent>();
+
+bool IsPlayerLevelledUp(entt::registry& registry) {
+    auto view = registry.view<PlayerTag, LevelComponent>();
     for (auto e : view) {
-        Texture2D& sprite = view.get<SpriteComponent>(e).sprite;
-        UnloadTexture(sprite);
+        LevelComponent& levelComp = view.get<LevelComponent>(e);
+        if (levelComp.justLeveled) {
+            return true;
+        }
+    }
+    return false;
+}
+void SetPlayerLevelledUp(entt::registry& registry, bool status) {
+    auto view = registry.view<PlayerTag, LevelComponent>();
+    for (auto e : view) {
+        LevelComponent& levelComp = view.get<LevelComponent>(e);
+        levelComp.justLeveled = status;
+    }
+}
+
+void RandomizeUpgrades(entt::registry& registry) {
+    auto choiceView = registry.view<ChoiceComponent>();
+    for (auto e : choiceView) {
+        ChoiceComponent& choice = choiceView.get<ChoiceComponent>(e);
+        int option = GetRandomValue(1, 5);
+        choice.choice = static_cast<LevelUpOptions>(option);
+        switch (choice.choice) {
+            case LevelUpOptions::PLAYER_HEALTH:
+                choice.description = "Increase Max Health";
+                break;
+            case LevelUpOptions::PLAYER_MOVESPEED:
+                choice.description = "Increase Move Speed";
+                break;
+            case LevelUpOptions::WEAPON_FIRERATE:
+                choice.description = "Increase Weapon Fire Rate";
+                break;
+            case LevelUpOptions::WEAPON_DAMAGE:
+                choice.description = "Increase Weapon Damage";
+                break;
+            case LevelUpOptions::WEAPON_PIERCE:
+                choice.description = "Increase Weapon Pierce";
+                break;
+        }
+    }
+}
+
+void ChooseUpgrade(entt::registry& registry, bool& isPaused) {
+    auto choiceView = registry.view<ChoiceComponent>();
+    auto playerView = registry.view<PlayerTag, HealthComponent, MoveSpeedComponent, LevelComponent>();
+    auto weaponView = registry.view<WeaponTag, FireRateComponent, ContactDamageComponent, PierceComponent>();
+    
+    for (auto e : choiceView) {
+        ChoiceComponent& choice = choiceView.get<ChoiceComponent>(e);
+        if (CheckCollisionPointRec(GetMousePosition(), choice.rect) && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+            switch (choice.choice) {
+                case LevelUpOptions::PLAYER_HEALTH: {
+                    for (auto p : playerView) {
+                        HealthComponent& health = playerView.get<HealthComponent>(p);
+                        health.currentHealth += 20.0f;
+                        health.maxHealth += 20.0f;
+                    }
+                    break;
+                }
+                case LevelUpOptions::PLAYER_MOVESPEED: {
+                    for (auto p : playerView) {
+                        MoveSpeedComponent& moveSpeed = playerView.get<MoveSpeedComponent>(p);
+                        moveSpeed.speed += 20.0f;
+                    }
+                    break;
+                }
+                case LevelUpOptions::WEAPON_FIRERATE: {
+                    for (auto w : weaponView) {
+                        FireRateComponent& fireRate = weaponView.get<FireRateComponent>(w);
+                        fireRate.fireRate -= 0.05f;
+                    }
+                    break;
+                }
+                case LevelUpOptions::WEAPON_DAMAGE: {
+                    for (auto w : weaponView) {
+                        ContactDamageComponent& damage = weaponView.get<ContactDamageComponent>(w);
+                        damage.damage += 10;
+                    }
+                    break;
+                }
+                case LevelUpOptions::WEAPON_PIERCE: {
+                    for (auto w : weaponView) {
+                        PierceComponent& pierce = weaponView.get<PierceComponent>(w);
+                        pierce.pierceCount += 1;
+                    }
+                    break;
+                }
+            }
+
+            SetPlayerLevelledUp(registry, false);
+            isPaused = false;
+        }
+    }
+}
+
+void UnloadResources(entt::registry& registry, const std::vector<Texture2D>& textures) {
+    for (const auto &tex : textures) {
+        UnloadTexture(tex);
     }
 }
 
@@ -693,44 +939,63 @@ int main() {
     SetTargetFPS(FPS);
 
     std::vector<GridCell> grid;
-    InitGrid(grid, 80);
+    int cellSize = 80;
+    InitGrid(grid, cellSize);
 
     entt::registry registry;
+
+    Texture2D playerTex = LoadTexture("assets/player.png");
+    Texture2D enemyTex = LoadTexture("assets/enemy.png");
+
     entt::entity player_entity = registry.create();
-    InitPlayer(registry, player_entity);
+    InitPlayer(registry, player_entity, playerTex);
 
     entt::entity gun_entity = registry.create();
     InitGun(registry, gun_entity);
-
+    InitChoices(registry);
 
     int score = 0;
     bool isPaused = false;
-
+    float timeElapsed = 0.0f;
+    float accumulator = 0.0f;
     while (!WindowShouldClose()) {
         float delta_time = GetFrameTime();
+        timeElapsed += delta_time; 
 
         if (!isPaused) {
-            AssignEntitiesToGrid(grid, registry, 80);
-
+            accumulator += delta_time;  
             PlayerInputSystem(registry);
-            PlayerMovementSystem(registry, delta_time);
-            EnemyMovementSystem(registry, delta_time);
 
-            EnemySpawnSystem(registry, delta_time);
+            while (accumulator >= TIMESTEP) {
+                PlayerMovementSystem(registry, TIMESTEP);
+                EnemyMovementSystem(registry, TIMESTEP);
 
-            AimSystem(registry);
-            FireSystem(registry, delta_time);
-            HitSystem(registry, delta_time, grid, score);
+                EnemySpawnSystem(registry, TIMESTEP, enemyTex, timeElapsed);
+                AimSystem(registry);
+                FireSystem(registry, TIMESTEP);
 
-            DefeatedEnemiesSystem(registry, score);
-            AccumulatorSystems(registry, delta_time);
+                AssignEntitiesToGrid(grid, registry, cellSize);
 
-            DefeatedPlayerSystem(registry, isPaused);
+                HitSystem(registry, TIMESTEP, grid, score, isPaused);
+
+                DefeatedEnemiesSystem(registry, score);
+                AccumulatorSystems(registry, TIMESTEP);
+                DefeatedPlayerSystem(registry, isPaused);
+
+                if (IsPlayerLevelledUp(registry)) { 
+                    RandomizeUpgrades(registry);
+                }
+
+                accumulator -= TIMESTEP;
+            }
+        } else {
+            if (IsPlayerLevelledUp(registry)) {
+                ChooseUpgrade(registry, isPaused);
+            }
         }
 
         BeginDrawing();
         ClearBackground(BLACK);
-        DrawSystem(registry, score);
 
         // draw grid cells if it contains entities
         // for (const auto& cell : grid) {
@@ -738,10 +1003,13 @@ int main() {
         //         DrawRectangleLines(cell.x * cell.width, cell.y * cell.width, cell.width, cell.width, WHITE);
         //     }
         // }
+
+        DrawSystem(registry, score);
+
         EndDrawing();
     }
 
-    UnloadResources(registry);
+    UnloadResources(registry, { playerTex, enemyTex });
     CloseWindow();
     return 0;
 }
