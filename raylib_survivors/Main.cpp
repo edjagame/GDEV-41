@@ -5,11 +5,13 @@
 #include <string>
 #include <set>
 #include <iostream>
+// new
+#include "raylibsurvivors_scene_manager.hpp"
 
 const int WINDOW_WIDTH = 1280;
 const int WINDOW_HEIGHT = 720;
-const float FPS = 60.0f;
-const float TIMESTEP = 1.0f / FPS; 
+// const float FPS = 60.0f;
+// const float TIMESTEP = 1.0f / FPS; 
 
 // ik these tags are not very ecs-y but to make things easier to manage HAHAHAH
 struct PlayerTag {/* If an entity has this component, it is a player */};
@@ -26,9 +28,8 @@ enum class LevelUpOptions {
     WEAPON_DAMAGE = 4,
     WEAPON_PIERCE = 5
 };
-struct ChoiceComponent { LevelUpOptions choice; Rectangle rect; std::string description; 
-        
-};
+
+struct ChoiceComponent { LevelUpOptions choice; Rectangle rect; std::string description; };
 
 struct HealthComponent { float currentHealth; float maxHealth; };
 struct IFramesComponent { bool isInvuln; float invulnTime; float invulnAccumulator; };
@@ -66,6 +67,22 @@ struct FireRateComponent { float fireRate; float fireRateAccumulator; };
 struct LifetimeComponent { float remaining; };
 struct PierceComponent { int pierceCount; int pierceAccumulator; std::vector<entt::entity> piercedEntities; };
 struct KnockbackComponent { float force; };
+
+// Scene Manager
+// enum class Scene {
+//     MAIN_MENU,
+//     GAME_PROPER,
+//     // PAUSE_MENU,
+//     // LEADERBOARD
+// };
+
+// UI components
+struct SizeComponent { float width; float height; };
+struct TextComponent { std::string label; };
+struct HoverableComponent { bool isHovering; };
+// check if entity is clicked then call function pointer
+// source: https://en.cppreference.com/w/cpp/language/pointer.html#Pointers_to_functions
+struct ClickableComponent { void (*onClick)(entt::registry&, SceneManager*); }; 
 
 struct GridCell {
     std::vector<entt::entity> entities;
@@ -207,6 +224,92 @@ void InitChoices(entt::registry& registry) {
     registry.emplace<ChoiceComponent>(choice3, LevelUpOptions::NONE, Rectangle{WINDOW_WIDTH / 2 - 350, WINDOW_HEIGHT / 2 + 100, 700, 50}, "" );
 }
 
+void PlayGameSystem(entt::registry& registry, SceneManager* sceneManager) {
+    // Switch to Game Scene
+    sceneManager->SwitchScene(1); 
+}
+
+void QuitGameSystem(entt::registry& registry, SceneManager* sceneManager) {
+    CloseWindow();
+}
+
+void InitMainMenu(entt::registry& registry, SceneManager* sceneManager)
+{
+    // Background Texture
+    entt::entity background = registry.create();
+    Texture2D backgroundTex = ResourceManager::GetInstance()->GetTexture("assets/MainMenuBG.png");
+    registry.emplace<SpriteComponent>(background, backgroundTex, Vector2{0.0f, 0.0f});
+
+    // Play Button
+    entt::entity playButton = registry. create();
+    registry.emplace<PositionComponent>(playButton, Vector2{WINDOW_WIDTH/2 - 80, WINDOW_HEIGHT/2 + 100});
+    registry.emplace<SizeComponent>(playButton, 150.0f, 50.0f);
+    registry.emplace<TextComponent>(playButton, "Play");
+    registry.emplace<HoverableComponent>(playButton, false);
+    registry.emplace<ClickableComponent>(playButton, &PlayGameSystem);
+
+    // Quit Button
+    entt::entity quitButton = registry. create();
+    registry.emplace<PositionComponent>(quitButton, Vector2{WINDOW_WIDTH/2 - 80, WINDOW_HEIGHT/2 + 200});
+    registry.emplace<SizeComponent>(quitButton, 150.0f, 50.0f);
+    registry.emplace<TextComponent>(quitButton, "Quit");
+    registry.emplace<HoverableComponent>(quitButton, false);
+    registry.emplace<ClickableComponent>(quitButton, &QuitGameSystem);
+}
+
+void UIRenderSystem(entt::registry& registry) {
+    // Draw background
+    auto bgView = registry.view<SpriteComponent>();
+    for (auto e : bgView) {
+        SpriteComponent& bgTexture = bgView.get<SpriteComponent>(e);
+        DrawTexture(bgTexture.sprite, 0, 0, WHITE);
+    }
+
+    // Draw buttons
+    auto view = registry.view<PositionComponent, SizeComponent, TextComponent, HoverableComponent>();
+    for (auto e : view) {
+        PositionComponent& position = view.get<PositionComponent>(e);
+        SizeComponent& size = view.get<SizeComponent>(e);
+        TextComponent& text = view.get<TextComponent>(e);
+        HoverableComponent& hover = view.get<HoverableComponent>(e);
+        Color buttonColor, textColor;
+
+        if (hover.isHovering) {
+            buttonColor = GREEN;
+            textColor = WHITE;
+        }
+        else {
+            buttonColor = WHITE;
+            textColor = BLACK;
+        }
+
+        DrawRectangle(position.position.x, position.position.y, size.width, size.height, buttonColor);
+        DrawText(text.label.c_str(), position.position.x + 50,  position.position.y + 12, 25, textColor);
+    }
+}
+
+void ClickHoverSystem(entt::registry& registry, SceneManager* sceneManager) {
+    Vector2 mousePosition = GetMousePosition();
+    
+    auto view = registry.view<PositionComponent, SizeComponent, HoverableComponent, ClickableComponent>();
+    for (auto e : view) {
+        PositionComponent& position = view.get<PositionComponent>(e);
+        SizeComponent& size = view.get<SizeComponent>(e);
+        ClickableComponent& click = view.get<ClickableComponent>(e);
+        HoverableComponent& hover = view.get<HoverableComponent>(e);
+
+        Rectangle button = { position.position.x, position.position.y, size.width, size.height };
+
+        //new 
+        hover.isHovering = CheckCollisionPointRec(mousePosition, button);
+
+        if (hover.isHovering && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+            if(click.onClick) {
+                click.onClick(registry, sceneManager);
+            }
+        }
+    }
+}
 
 // Handles player input and updates velocity component
 void PlayerInputSystem(entt::registry& registry) {
@@ -331,16 +434,6 @@ void DrawSystem(entt::registry& registry, int score) {
         DrawTexturePro(sprite, source, dest, origin, angle, color);
     }
 
-    //Draw Hitboxes
-    // auto shapeView = registry.view<PositionComponent, CircleHitboxComponent, ColorComponent>();
-    // for (auto e : shapeView) {
-    //     Vector2& pos = shapeView.get<PositionComponent>(e).position;
-    //     CircleHitboxComponent& circle = shapeView.get<CircleHitboxComponent>(e);
-    //     Color& color = shapeView.get<ColorComponent>(e).currentColor;
-
-    //     DrawCircleV(pos, circle.radius, color);
-    // }
-
     // Draw projectiles
     auto projectileView = registry.view<ProjectileTag, PositionComponent, CircleHitboxComponent, ColorComponent>();
     for (auto e : projectileView) {
@@ -389,8 +482,6 @@ void DrawSystem(entt::registry& registry, int score) {
             DrawText(choice.description.c_str(), choice.rect.x + (choice.rect.width - textWidth) / 2, choice.rect.y + (choice.rect.height - fontSize) / 2, fontSize, BLACK);
         }
     }
-    
-
     
     // Draw Score
     DrawText(TextFormat("Score: %d", score), 10, 10, 20, WHITE);
@@ -660,96 +751,6 @@ void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>
     }
 }
 
-//     // Get player position
-//     Vector2 playerPos = Vector2Zero();
-//     for (auto e : playerView) {
-//         playerPos = playerView.get<PositionComponent>(e).position;
-//     }
-
-//     // Projectile-Enemy collisions
-//     for (auto proj : projectileView) {
-//         Vector2& projPos = projectileView.get<PositionComponent>(proj).position;
-//         CircleHitboxComponent& projHitbox = projectileView.get<CircleHitboxComponent>(proj);
-//         float projDamage = projectileView.get<ContactDamageComponent>(proj).damage;
-//         Vector2& projVelocity = projectileView.get<VelocityComponent>(proj).velocity;
-//         KnockbackComponent& projKnockback = projectileView.get<KnockbackComponent>(proj);
-
-//         for (auto enemy : enemyView) {
-//             Vector2& enemyPos = enemyView.get<PositionComponent>(enemy).position;
-//             Vector2& enemyVelocity = enemyView.get<VelocityComponent>(enemy).velocity;
-//             CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(enemy);
-//             HealthComponent& enemyHealth = enemyView.get<HealthComponent>(enemy);
-//             HitFlashComponent& enemyHitFlash = enemyView.get<HitFlashComponent>(enemy);
-//             PierceComponent& pc = registry.get<PierceComponent>(proj);
-
-//             float dist = Vector2Distance(projPos, enemyPos);
-//             bool hasPierced = std::find(pc.piercedEntities.begin(), pc.piercedEntities.end(), enemy) != pc.piercedEntities.end();
-//             if (dist <= (projHitbox.radius + enemyHitbox.radius) && !hasPierced) {
-//                 enemyHealth.health -= projDamage;
-//                 enemyHitFlash.isHit = true;
-                
-//                 score += 10;
-                
-//                 // Knockback effect
-//                 enemyVelocity = Vector2Add(enemyVelocity, Vector2Scale(Vector2Normalize(projVelocity), projKnockback.force));
-
-//                 pc.pierceAccumulator += 1;
-//                 pc.piercedEntities.push_back(enemy);
-//                 if (pc.pierceAccumulator >= pc.pierceCount) {
-//                     registry.destroy(proj);
-//                     break;
-//                 }
-//             }
-//         }
-//     }
-
-//     // Enemy-Player collisions
-//     for (auto player : playerView) {
-//         Vector2& playerPos = playerView.get<PositionComponent>(player).position;
-//         CircleHitboxComponent& playerHitbox = playerView.get<CircleHitboxComponent>(player);
-//         HealthComponent& playerHealth = playerView.get<HealthComponent>(player);
-//         IFramesComponent& playerIFrames = playerView.get<IFramesComponent>(player);
-//         HitFlashComponent& playerHitFlash = playerView.get<HitFlashComponent>(player);
-
-//         // Enemy-Player collisions
-//         for (auto enemy : enemyView) {
-//             Vector2& enemyPos = enemyView.get<PositionComponent>(enemy).position;
-//             CircleHitboxComponent& enemyHitbox = enemyView.get<CircleHitboxComponent>(enemy);
-//             ContactDamageComponent& enemyDamage = enemyView.get<ContactDamageComponent>(enemy);
-
-//             float dist = Vector2Distance(playerPos, enemyPos);
-//             if (dist <= (playerHitbox.radius + enemyHitbox.radius) && !playerIFrames.isInvuln) {
-//                 playerHealth.health -= enemyDamage.damage;
-//                 playerHitFlash.isHit = true;
-//                 playerIFrames.isInvuln = true;
-//                 playerIFrames.invulnAccumulator = 0.0f;
-//                 break;
-//             }
-//         }
-
-//         for (auto xpOrb : xpOrbView) {
-//             Vector2& orbPos = xpOrbView.get<PositionComponent>(xpOrb).position;
-//             CircleHitboxComponent& orbHitbox = xpOrbView.get<CircleHitboxComponent>(xpOrb);
-//             XPOrbTag& xpOrbTag = xpOrbView.get<XPOrbTag>(xpOrb);
-
-//             float dist = Vector2Distance(playerPos, orbPos);
-//             if (dist <= (playerHitbox.radius + orbHitbox.radius)) {
-
-//                 LevelComponent& levelComp = registry.get<LevelComponent>(player);
-//                 levelComp.experience += xpOrbTag.amount;
-
-//                 float xpForNextLevel = levelComp.level * 100.0f;
-//                 if (levelComp.experience >= xpForNextLevel) {
-//                     levelComp.level += 1;
-//                     levelComp.experience -= xpForNextLevel;
-//                 }
-
-//                 registry.destroy(xpOrb);
-//             }
-//         }
-//     }
-// }
-
 void DefeatedEnemiesSystem(entt::registry& registry, int& score) {
     auto view = registry.view<EnemyTag, HealthComponent, PositionComponent>();
     for (auto e : view) {
@@ -920,12 +921,6 @@ void ChooseUpgrade(entt::registry& registry, bool& isPaused) {
     }
 }
 
-void UnloadResources(entt::registry& registry, const std::vector<Texture2D>& textures) {
-    for (const auto &tex : textures) {
-        UnloadTexture(tex);
-    }
-}
-
 entt::entity FindPlayerEntity(entt::registry& registry) {
     auto view = registry.view<PlayerTag>();
     for (auto e : view) {
@@ -938,78 +933,43 @@ int main() {
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Raylib Survivors");
     SetTargetFPS(FPS);
 
-    std::vector<GridCell> grid;
-    int cellSize = 80;
-    InitGrid(grid, cellSize);
-
     entt::registry registry;
 
-    Texture2D playerTex = LoadTexture("assets/player.png");
-    Texture2D enemyTex = LoadTexture("assets/enemy.png");
+    // Scene Manager
+    SceneManager sceneManager;
 
-    entt::entity player_entity = registry.create();
-    InitPlayer(registry, player_entity, playerTex);
+    // Registering Scenes
+    MainMenuScene mainMenuScene(&registry);
+    mainMenuScene.SetSceneManager(&sceneManager);
 
-    entt::entity gun_entity = registry.create();
-    InitGun(registry, gun_entity);
-    InitChoices(registry);
+    GameScene gameScene(&registry); 
+    gameScene.SetSceneManager(&sceneManager);
 
-    int score = 0;
-    bool isPaused = false;
-    float timeElapsed = 0.0f;
-    float accumulator = 0.0f;
+    sceneManager.RegisterScene(&mainMenuScene, 0);
+    sceneManager.RegisterScene(&gameScene, 1);
+
+    // Start with main menu
+    sceneManager.SwitchScene(0);
+
     while (!WindowShouldClose()) {
-        float delta_time = GetFrameTime();
-        timeElapsed += delta_time; 
-
-        if (!isPaused) {
-            accumulator += delta_time;  
-            PlayerInputSystem(registry);
-
-            while (accumulator >= TIMESTEP) {
-                PlayerMovementSystem(registry, TIMESTEP);
-                EnemyMovementSystem(registry, TIMESTEP);
-
-                EnemySpawnSystem(registry, TIMESTEP, enemyTex, timeElapsed);
-                AimSystem(registry);
-                FireSystem(registry, TIMESTEP);
-
-                AssignEntitiesToGrid(grid, registry, cellSize);
-
-                HitSystem(registry, TIMESTEP, grid, score, isPaused);
-
-                DefeatedEnemiesSystem(registry, score);
-                AccumulatorSystems(registry, TIMESTEP);
-                DefeatedPlayerSystem(registry, isPaused);
-
-                if (IsPlayerLevelledUp(registry)) { 
-                    RandomizeUpgrades(registry);
-                }
-
-                accumulator -= TIMESTEP;
-            }
-        } else {
-            if (IsPlayerLevelledUp(registry)) {
-                ChooseUpgrade(registry, isPaused);
-            }
-        }
-
+        Scene* activeScene = sceneManager.GetActiveScene();
         BeginDrawing();
-        ClearBackground(BLACK);
+        ClearBackground(WHITE);
 
-        // draw grid cells if it contains entities
-        // for (const auto& cell : grid) {
-        //     if (cell.numEntities > 0) {
-        //         DrawRectangleLines(cell.x * cell.width, cell.y * cell.width, cell.width, cell.width, WHITE);
-        //     }
-        // }
-
-        DrawSystem(registry, score);
-
+        if (activeScene != nullptr) {
+            activeScene->Update();
+            activeScene->Draw();
+        }
         EndDrawing();
     }
 
-    UnloadResources(registry, { playerTex, enemyTex });
+    Scene* activeScene = sceneManager.GetActiveScene();
+    if (activeScene != nullptr) {
+        activeScene->End();
+    }
+
+    ResourceManager::GetInstance()->UnloadAllTextures();
+
     CloseWindow();
     return 0;
 }
