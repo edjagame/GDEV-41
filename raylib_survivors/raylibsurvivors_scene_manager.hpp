@@ -139,10 +139,15 @@ void InitGun(entt::registry& registry, entt::entity e);
 void InitXPOrb(entt::registry& registry, entt::entity e, Vector2 position, float xpAmount);
 void InitChoices(entt::registry& registry);
 
-// void PlayGameSystem(entt::registry& registry, SceneManager* sceneManager);
-// void QuitGameSystem(entt::registry& registry, SceneManager* sceneManager);
 void InitMainMenu(entt::registry& registry, SceneManager* sceneManager);
+void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager);
 void UIRenderSystem(entt::registry& registry);
+
+void InitNameInput(entt::registry& registry);
+void LeaderboardRenderSystem(entt::registry& registry, SceneManager* sceneManager);
+void NameInputSystem(entt::registry& registry, SceneManager* sceneManager, int score);
+void NameInputRenderSystem(entt::registry& registry, int score);
+void LeaderboardSwitchScene(entt::registry& registry, SceneManager* sceneManager);
 void ClickHoverSystem(entt::registry& registry, SceneManager* sceneManager);
 
 void PlayerInputSystem(entt::registry& registry);
@@ -151,14 +156,11 @@ void EnemyMovementSystem(entt::registry& registry, float delta_time);
 void EnemySpawnSystem(entt::registry& registry, float delta_time, const Texture2D &enemyTexture, float timeElapsed);
 void AimSystem(entt::registry& registry);
 void FireSystem(entt::registry& registry, float delta_time);
-// void Collide(entt::registry &registry, entt::entity &a, entt::entity &b, float elasticity = 1.0f);
-// bool SweptCollision(entt::registry &registry, entt::entity &a, entt::entity &b, float maxTime);
 void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>& grid, int& score, bool& isPaused);
 void DefeatedEnemiesSystem(entt::registry& registry, int& score);
-void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused);
+void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused, SceneManager* sceneManager, bool& isGameOver);
 void AccumulatorSystems (entt::registry& registry, float delta_time);
 bool IsPlayerLevelledUp(entt::registry& registry);
-// void SetPlayerLevelledUp(entt::registry& registry, bool status);
 void RandomizeUpgrades(entt::registry& registry);
 void ChooseUpgrade(entt::registry& registry, bool& isPaused);
 
@@ -205,7 +207,8 @@ class GameScene : public Scene {
     std::vector<GridCell> grid;
     int cellSize = 80;
     int score = 0;
-    bool isPaused = false;
+    bool isPaused;
+    bool isGameOver = false;
     float timeElapsed = 0.0f;
     float accumulator = 0.0f;  
 
@@ -213,6 +216,8 @@ class GameScene : public Scene {
         GameScene(entt::registry* r) : registry(r){}
 
         void Begin() override {
+            isGameOver = false;
+            score = 0;
             // Initialize grid
             InitGrid(grid, cellSize);
 
@@ -227,6 +232,11 @@ class GameScene : public Scene {
             entt::entity gun_entity = registry->create();
             InitGun(*registry, gun_entity);
             InitChoices(*registry);
+
+            isPaused = false;
+
+            timeElapsed = 0.0f;
+            accumulator = 0.0f;
         }
 
         void End() override {
@@ -238,6 +248,8 @@ class GameScene : public Scene {
             timeElapsed += delta_time;
 
             PlayerInputSystem(*registry);
+
+            DefeatedPlayerSystem(*registry, isPaused, GetSceneManager(), isGameOver);
 
             if(!isPaused){
                 accumulator += delta_time;  
@@ -255,7 +267,6 @@ class GameScene : public Scene {
 
                     DefeatedEnemiesSystem(*registry, score);
                     AccumulatorSystems(*registry, TIMESTEP);
-                    DefeatedPlayerSystem(*registry, isPaused);
 
                     if (IsPlayerLevelledUp(*registry)) { 
                         RandomizeUpgrades(*registry);
@@ -268,11 +279,48 @@ class GameScene : public Scene {
                     ChooseUpgrade(*registry, isPaused);
                 }
             }
+            if(isPaused) {
+                NameInputSystem(*registry, GetSceneManager(), score);
+                LeaderboardSwitchScene(*registry, GetSceneManager());
+            }
+        }
+
+
+
+        void Draw() override {
+            ClearBackground(BLACK);
+            if (!isGameOver) {
+                DrawSystem(*registry, score);
+            }
+
+            else {
+
+                NameInputRenderSystem(*registry, score);
+            }
+        }
+};
+
+class LeaderboardScene : public Scene {
+    entt::registry* registry;
+
+    public: 
+        LeaderboardScene(entt::registry* r) : registry(r){}
+        
+        void Begin() override {
+            InitLeaderboard(*registry, GetSceneManager());
+        }
+
+        void End() override {
+            registry->clear();
+        }
+
+        void Update() override {
+            ClickHoverSystem(*registry, GetSceneManager());
         }
 
         void Draw() override {
             ClearBackground(BLACK);
-            DrawSystem(*registry, score);
+            LeaderboardRenderSystem(*registry, GetSceneManager());
         }
 };
 

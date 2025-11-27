@@ -5,13 +5,18 @@
 #include <string>
 #include <set>
 #include <iostream>
-// new
 #include "raylibsurvivors_scene_manager.hpp"
+//new
+#include <fstream>
+#include <sstream>
+#include <algorithm>
 
 const int WINDOW_WIDTH = 1280;
 const int WINDOW_HEIGHT = 720;
 // const float FPS = 60.0f;
 // const float TIMESTEP = 1.0f / FPS; 
+
+bool hasQuit = false;
 
 // ik these tags are not very ecs-y but to make things easier to manage HAHAHAH
 struct PlayerTag {/* If an entity has this component, it is a player */};
@@ -68,21 +73,16 @@ struct LifetimeComponent { float remaining; };
 struct PierceComponent { int pierceCount; int pierceAccumulator; std::vector<entt::entity> piercedEntities; };
 struct KnockbackComponent { float force; };
 
-// Scene Manager
-// enum class Scene {
-//     MAIN_MENU,
-//     GAME_PROPER,
-//     // PAUSE_MENU,
-//     // LEADERBOARD
-// };
-
 // UI components
 struct SizeComponent { float width; float height; };
-struct TextComponent { std::string label; };
+struct TextComponent { std::string label; int fontSize; Color textColor; };
 struct HoverableComponent { bool isHovering; };
 // check if entity is clicked then call function pointer
 // source: https://en.cppreference.com/w/cpp/language/pointer.html#Pointers_to_functions
 struct ClickableComponent { void (*onClick)(entt::registry&, SceneManager*); }; 
+// new
+struct ScoreComponent { std::string name; int score; };
+struct NameInputComponent { std::string input; bool doneTyping; bool saved; };
 
 struct GridCell {
     std::vector<entt::entity> entities;
@@ -157,7 +157,7 @@ void AssignEntitiesToGrid(std::vector<GridCell> &grid, entt::registry& registry,
 void InitPlayer(entt::registry& registry, entt::entity e, const Texture2D &playerTexture) {
     Vector2 center = {WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f};
     float health = 100.0f;
-    float moveSpeed = 200.0f;
+    float moveSpeed = 100.0f;
     Vector2 spriteSize = {50, 50};
         
     registry.emplace<PlayerTag>(e);
@@ -177,7 +177,7 @@ void InitPlayer(entt::registry& registry, entt::entity e, const Texture2D &playe
 void InitEnemy(entt::registry& registry, entt::entity e, 
                 const Texture2D &enemyTexture,
                 Vector2 position = {100.0f, 100.0f}, 
-                float health = 10.0f, 
+                float health = 100.0f, 
                 float moveSpeed = 100.0f) {
 
     registry.emplace<EnemyTag>(e);
@@ -187,18 +187,18 @@ void InitEnemy(entt::registry& registry, entt::entity e,
     registry.emplace<VelocityComponent>(e, Vector2Zero());
     registry.emplace<MassComponent>(e, 1.0f, 1.0f);
     registry.emplace<AimDirectionComponent>(e, Vector2Zero());
-    registry.emplace<ColorComponent>(e, YELLOW);
+    registry.emplace<ColorComponent>(e, WHITE);
     registry.emplace<MoveSpeedComponent>(e, moveSpeed);
-    registry.emplace<CircleHitboxComponent>(e, 20.0f);
+    registry.emplace<CircleHitboxComponent>(e, 30.0f);
     registry.emplace<HitFlashComponent>(e, false, 0.1f, 0.0f, RED);
-    registry.emplace<SpriteComponent>(e, enemyTexture, Vector2{40, 40});
+    registry.emplace<SpriteComponent>(e, enemyTexture, Vector2{60, 60});
 }
 
 void InitGun (entt::registry& registry, entt::entity e) {
     registry.emplace<WeaponTag>(e, "Gun");
     registry.emplace<PositionComponent>(e, Vector2Zero());
     registry.emplace<AimDirectionComponent>(e, Vector2Zero());
-    registry.emplace<FireRateComponent>(e, 1.0f, 0.0f); 
+    registry.emplace<FireRateComponent>(e, 0.7f, 0.0f); 
     registry.emplace<CircleHitboxComponent>(e, 5.0f);
     registry.emplace<ContactDamageComponent>(e, 10.0f);
     registry.emplace<MoveSpeedComponent>(e, 2000.0f);
@@ -230,7 +230,7 @@ void PlayGameSystem(entt::registry& registry, SceneManager* sceneManager) {
 }
 
 void QuitGameSystem(entt::registry& registry, SceneManager* sceneManager) {
-    CloseWindow();
+    hasQuit = true;
 }
 
 void InitMainMenu(entt::registry& registry, SceneManager* sceneManager)
@@ -244,7 +244,7 @@ void InitMainMenu(entt::registry& registry, SceneManager* sceneManager)
     entt::entity playButton = registry. create();
     registry.emplace<PositionComponent>(playButton, Vector2{WINDOW_WIDTH/2 - 80, WINDOW_HEIGHT/2 + 100});
     registry.emplace<SizeComponent>(playButton, 150.0f, 50.0f);
-    registry.emplace<TextComponent>(playButton, "Play");
+    registry.emplace<TextComponent>(playButton, "Play", 25, BLACK);
     registry.emplace<HoverableComponent>(playButton, false);
     registry.emplace<ClickableComponent>(playButton, &PlayGameSystem);
 
@@ -252,9 +252,74 @@ void InitMainMenu(entt::registry& registry, SceneManager* sceneManager)
     entt::entity quitButton = registry. create();
     registry.emplace<PositionComponent>(quitButton, Vector2{WINDOW_WIDTH/2 - 80, WINDOW_HEIGHT/2 + 200});
     registry.emplace<SizeComponent>(quitButton, 150.0f, 50.0f);
-    registry.emplace<TextComponent>(quitButton, "Quit");
+    registry.emplace<TextComponent>(quitButton, "Quit", 25, BLACK);
     registry.emplace<HoverableComponent>(quitButton, false);
     registry.emplace<ClickableComponent>(quitButton, &QuitGameSystem);
+}
+
+std::vector<ScoreComponent> LoadScores(const std::string& filename) {
+    // create a dynamic array of scores
+    std::vector<ScoreComponent> scores;
+    std::ifstream file(filename);
+    if (!file.is_open()) return scores;
+
+    std::string name;
+    int score;
+    while (file >> name >> score) {
+        scores.push_back({name, score});
+    }
+
+    file.close();
+    return scores;
+}
+
+bool CompareDescending(const ScoreComponent &scoreA, const ScoreComponent &scoreB) {
+    return scoreA.score > scoreB.score;
+}
+
+void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager){
+    // Leaderboard Text
+    entt::entity leaderboardText = registry.create();
+    registry.emplace<PositionComponent>(leaderboardText, Vector2{WINDOW_WIDTH/2 - 400, WINDOW_HEIGHT/2 - 300});
+    registry.emplace<TextComponent>(leaderboardText, "LEADERBOARD", 80, WHITE);
+
+    std::vector<ScoreComponent> scores = LoadScores("raylibsurvivors_scores.text");
+
+    std::sort(scores.begin(), scores.end(), CompareDescending);
+
+    if (scores.size() > 6) {
+        scores.resize(6);
+    }
+
+    int positionY = 200;
+    int offset = 50; // space between scores
+
+    for (size_t i = 0; i < scores.size(); ++i) {
+        entt::entity score = registry.create();
+        registry.emplace<PositionComponent>(score, float(WINDOW_WIDTH/2 - 100), float(positionY + i * offset));
+        std::string text = scores[i].name + " " + std::to_string(scores[i].score);
+        registry.emplace<TextComponent>(score, text, 30, WHITE);
+    }
+    // Play Button
+    entt::entity playButton = registry.create();
+    registry.emplace<PositionComponent>(playButton, Vector2{WINDOW_WIDTH/2 - 200, WINDOW_HEIGHT/2 + 200});
+    registry.emplace<SizeComponent>(playButton, 150.0f, 50.0f);
+    registry.emplace<TextComponent>(playButton, "Play", 25, BLACK);
+    registry.emplace<HoverableComponent>(playButton, false);
+    registry.emplace<ClickableComponent>(playButton, &PlayGameSystem);
+
+    // Quit Button
+    entt::entity quitButton = registry.create();
+    registry.emplace<PositionComponent>(quitButton, Vector2{WINDOW_WIDTH/2 + 80, WINDOW_HEIGHT/2 + 200});
+    registry.emplace<SizeComponent>(quitButton, 150.0f, 50.0f);
+    registry.emplace<TextComponent>(quitButton, "Quit", 25, BLACK);
+    registry.emplace<HoverableComponent>(quitButton, false);
+    registry.emplace<ClickableComponent>(quitButton, &QuitGameSystem);
+}
+
+void InitNameInput(entt::registry& registry) {
+    entt::entity nameInput = registry.create();
+    registry.emplace<NameInputComponent>(nameInput);
 }
 
 void UIRenderSystem(entt::registry& registry) {
@@ -285,6 +350,117 @@ void UIRenderSystem(entt::registry& registry) {
 
         DrawRectangle(position.position.x, position.position.y, size.width, size.height, buttonColor);
         DrawText(text.label.c_str(), position.position.x + 50,  position.position.y + 12, 25, textColor);
+    }
+}
+
+void LeaderboardRenderSystem(entt::registry& registry, SceneManager* sceneManager) {
+    // Draw Text    
+    auto textView = registry.view<PositionComponent, TextComponent>();
+    for (auto e : textView) {
+        PositionComponent& position = textView.get<PositionComponent>(e);
+        TextComponent& text = textView.get<TextComponent>(e);
+
+        DrawText(text.label.c_str(), position.position.x + 100,  position.position.y, text.fontSize, text.textColor);
+    }
+
+    // Draw buttons
+    auto view = registry.view<PositionComponent, SizeComponent, TextComponent, HoverableComponent>();
+    for (auto e : view) {
+        PositionComponent& position = view.get<PositionComponent>(e);
+        SizeComponent& size = view.get<SizeComponent>(e);
+        TextComponent& text = view.get<TextComponent>(e);
+        HoverableComponent& hover = view.get<HoverableComponent>(e);
+        Color buttonColor, textColor;
+
+        if (hover.isHovering) {
+            buttonColor = GREEN;
+            textColor = WHITE;
+        }
+        else {
+            buttonColor = WHITE;
+            textColor = BLACK;
+        }
+
+        DrawRectangle(position.position.x, position.position.y, size.width, size.height, buttonColor);
+        DrawText(text.label.c_str(), position.position.x + 50,  position.position.y + 12, 25, textColor);
+    }
+}
+
+void SaveScoreSystem(const std::string& filename, const std::string& name, int score) {
+    std::vector<ScoreComponent> scores = LoadScores(filename);
+
+    // add new score
+    scores.push_back({name, score});
+
+    std::sort(scores.begin(), scores.end(), CompareDescending);
+    
+    if (scores.size() > 10) {
+        scores.resize(10);
+    }
+
+    // save to file
+    std::ofstream file(filename);
+    for (auto &score : scores) {
+        file << score.name << " " << score.score << "\n";
+    }
+
+    file.close();
+}
+
+void NameInputSystem(entt::registry& registry, SceneManager* sceneManager, int score) {
+    auto view = registry.view<NameInputComponent>();
+    for(auto e : view) {
+        NameInputComponent& input = view.get<NameInputComponent>(e);
+
+        if (input.doneTyping) continue; 
+
+        // get characters
+        int key = GetCharPressed();
+        while (key > 0) {
+            if ((key >= 32) && (key <= 126) && input.input.length() < 3) {
+                input.input += static_cast<char>(key);
+            }
+            key = GetCharPressed();
+        }
+
+        // remove character with backspace
+        if(IsKeyPressed(KEY_BACKSPACE) && !input.input.empty()) {
+            input.input.pop_back();
+        }
+
+        // indicate done typing with enter
+        if(IsKeyPressed(KEY_ENTER) && !input.input.empty()) {
+            input.doneTyping = true;
+        }
+
+        if(input.doneTyping && !input.saved) {
+            SaveScoreSystem("raylibsurvivors_scores.text", input.input, score);
+            input.saved = true;
+        }
+    }
+}
+
+void NameInputRenderSystem(entt::registry& registry, int score) {
+    DrawText("GAME OVER", WINDOW_WIDTH/2 - 250, WINDOW_HEIGHT/2 - 200 , 80, RED);
+    DrawText(("Final Score: " + std::to_string(score)).c_str(), WINDOW_WIDTH/2 - 200, WINDOW_HEIGHT/2 - 100 , 50, WHITE);
+    DrawText("Enter Your Name (Press Enter to Confirm):", WINDOW_WIDTH/2 - 350, WINDOW_HEIGHT/2 , 30, WHITE);
+    DrawRectangleLines(WINDOW_WIDTH/2 - 50, WINDOW_HEIGHT/2 + 140, 100, 50, WHITE);
+
+    auto view = registry.view<NameInputComponent>();
+    for (auto e : view) {
+        NameInputComponent& input = view.get<NameInputComponent>(e);
+
+        DrawText(input.input.c_str(), WINDOW_WIDTH/2 - 30, WINDOW_HEIGHT/2 + 150 , 30, WHITE);
+    }
+}
+
+void LeaderboardSwitchScene(entt::registry& registry, SceneManager* sceneManager) {
+    auto view = registry.view<NameInputComponent>();
+    for (auto e : view) {
+        NameInputComponent& input = view.get<NameInputComponent>(e);
+        if(input.doneTyping) {
+            sceneManager->SwitchScene(2); // leaderboard scene
+        }
     }
 }
 
@@ -376,11 +552,12 @@ void EnemySpawnSystem(entt::registry& registry, float delta_time, const Texture2
     static float spawnAccumulator = 0.0f;
 
     float baseSpawnRate = 0.5f;
-    float baseSpawnGrowthPerSecond = 0.01f;   
+    float baseSpawnGrowthPerSecond = 0.008f;   
     float enemiesPerSecond = baseSpawnRate + baseSpawnGrowthPerSecond * timeElapsed;
     float spawnInterval = 1.0f / enemiesPerSecond;
+    spawnInterval = std::max(0.1f, spawnInterval); 
 
-    float healthGrowthPerSecond = 0.5f;
+    float healthGrowthPerSecond = 0.45f;
     float moveSpeedGrowthPerSecond = 0.05f;
     float enemyHealth = 10.0f + healthGrowthPerSecond * timeElapsed;
     float enemyMoveSpeed = 25.0f + moveSpeedGrowthPerSecond * timeElapsed;
@@ -452,14 +629,7 @@ void DrawSystem(entt::registry& registry, int score) {
                         Vector2{ circle.radius * 2 * (health.currentHealth / health.maxHealth), 5 }, GREEN);
     }
 
-    auto playerView = registry.view<PlayerTag, HealthComponent, LevelComponent>();
-    for (auto e : playerView) {
-        HealthComponent& health = playerView.get<HealthComponent>(e);
-        LevelComponent& levelComp = playerView.get<LevelComponent>(e);
-        DrawText(TextFormat("Health: %.0f/%.0f", health.currentHealth, health.maxHealth), 10, 40, 20, WHITE);
-        DrawText(TextFormat("Level: %d", levelComp.level), 10, 70, 20, WHITE);
-        DrawText(TextFormat("XP: %.0f / %.0f", levelComp.experience, levelComp.level * 100.0f), 10, 100, 20, WHITE);
-    }
+    
 
     // Draw Choices
     if (IsPlayerLevelledUp(registry)) {
@@ -483,8 +653,17 @@ void DrawSystem(entt::registry& registry, int score) {
         }
     }
     
+    DrawRectangle(0, 0, 175, 150, Color{0, 0, 150, 50});
     // Draw Score
     DrawText(TextFormat("Score: %d", score), 10, 10, 20, WHITE);
+    auto playerView = registry.view<PlayerTag, HealthComponent, LevelComponent>();
+    for (auto e : playerView) {
+        HealthComponent& health = playerView.get<HealthComponent>(e);
+        LevelComponent& levelComp = playerView.get<LevelComponent>(e);
+        DrawText(TextFormat("Health: %.0f/%.0f", health.currentHealth, health.maxHealth), 10, 40, 20, WHITE);
+        DrawText(TextFormat("Level: %d", levelComp.level), 10, 70, 20, WHITE);
+        DrawText(TextFormat("XP: %.0f / %.0f", levelComp.experience, levelComp.level * 100.0f), 10, 100, 20, WHITE);
+    }
 }
 
 
@@ -605,22 +784,31 @@ bool SweptCollision(entt::registry &registry, entt::entity &a, entt::entity &b, 
 
     float R = aRadius + bRadius;
     
+    // out 1: overlapping circles are already colliding (relative distance less than radius)
     if (Vector2LengthSqr(relPos) <= R * R) return true;
 
+    
+
     float a_coeff = Vector2DotProduct(relVel, relVel);
+
+    // out 2: circles are not moving relative to each other (moving in same direction and speed)
     if (a_coeff <= 0.0001f) return false;
 
     float b_coeff = 2.0f * Vector2DotProduct(relPos, relVel);
     float c_coeff = Vector2DotProduct(relPos, relPos) - R * R;
 
+    // out 3: discriminant is negative
     float discriminant = b_coeff * b_coeff - 4.0f * a_coeff * c_coeff;
     if (discriminant < 0.0f) return false;
 
-    float sqrtD = sqrtf(discriminant);
-    float tEnter = (-b_coeff - sqrtD) / (2.0f * a_coeff);
-    float tExit  = (-b_coeff + sqrtD) / (2.0f * a_coeff);
+    discriminant = sqrtf(discriminant);
+    float tEnter = (-b_coeff - discriminant) / (2.0f * a_coeff);
+    float tExit  = (-b_coeff + discriminant) / (2.0f * a_coeff);
 
+    
     if (tEnter >= 0.0f && tEnter <= maxTime) return true;
+    if (tExit >= 0.0f && tExit <= maxTime) return true;
+    
     return false;
 }
 
@@ -769,7 +957,7 @@ void DefeatedEnemiesSystem(entt::registry& registry, int& score) {
     }
 }
 
-void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused) {
+void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused, SceneManager* sceneManager, bool& isGameOver) {
     auto view = registry.view<PlayerTag, HealthComponent>();
     auto weaponView = registry.view<WeaponTag>();
     for (auto e : view) {
@@ -777,6 +965,11 @@ void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused) {
         if (health.currentHealth <= 0) {
             registry.destroy(e);
             isPaused = true;
+            isGameOver = true;
+
+            // Let player input name to record score
+            InitNameInput(registry);
+
         }
     }
 }
@@ -844,9 +1037,14 @@ void SetPlayerLevelledUp(entt::registry& registry, bool status) {
 
 void RandomizeUpgrades(entt::registry& registry) {
     auto choiceView = registry.view<ChoiceComponent>();
+    std::vector<int> usedOptions;
     for (auto e : choiceView) {
         ChoiceComponent& choice = choiceView.get<ChoiceComponent>(e);
         int option = GetRandomValue(1, 5);
+        while (std::find(usedOptions.begin(), usedOptions.end(), option) != usedOptions.end()) {
+            option = GetRandomValue(1, 5);
+        }
+        usedOptions.push_back(option);
         choice.choice = static_cast<LevelUpOptions>(option);
         switch (choice.choice) {
             case LevelUpOptions::PLAYER_HEALTH:
@@ -895,7 +1093,11 @@ void ChooseUpgrade(entt::registry& registry, bool& isPaused) {
                 case LevelUpOptions::WEAPON_FIRERATE: {
                     for (auto w : weaponView) {
                         FireRateComponent& fireRate = weaponView.get<FireRateComponent>(w);
+                        
                         fireRate.fireRate -= 0.05f;
+                        if (fireRate.fireRate < 0.05f) {
+                            fireRate.fireRate = 0.05f; 
+                        }
                     }
                     break;
                 }
@@ -948,10 +1150,14 @@ int main() {
     sceneManager.RegisterScene(&mainMenuScene, 0);
     sceneManager.RegisterScene(&gameScene, 1);
 
+    LeaderboardScene leaderboardScene(&registry);
+    leaderboardScene.SetSceneManager(&sceneManager);
+    sceneManager.RegisterScene(&leaderboardScene, 2);
+
     // Start with main menu
     sceneManager.SwitchScene(0);
 
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !hasQuit) {
         Scene* activeScene = sceneManager.GetActiveScene();
         BeginDrawing();
         ClearBackground(WHITE);
