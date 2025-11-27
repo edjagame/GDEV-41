@@ -5,8 +5,8 @@
 #include <string>
 #include <set>
 #include <iostream>
-// new
 #include "raylibsurvivors_scene_manager.hpp"
+
 
 const int WINDOW_WIDTH = 1280;
 const int WINDOW_HEIGHT = 720;
@@ -68,17 +68,9 @@ struct LifetimeComponent { float remaining; };
 struct PierceComponent { int pierceCount; int pierceAccumulator; std::vector<entt::entity> piercedEntities; };
 struct KnockbackComponent { float force; };
 
-// Scene Manager
-// enum class Scene {
-//     MAIN_MENU,
-//     GAME_PROPER,
-//     // PAUSE_MENU,
-//     // LEADERBOARD
-// };
-
 // UI components
 struct SizeComponent { float width; float height; };
-struct TextComponent { std::string label; };
+struct TextComponent { std::string label; int fontSize; Color textColor; };
 struct HoverableComponent { bool isHovering; };
 // check if entity is clicked then call function pointer
 // source: https://en.cppreference.com/w/cpp/language/pointer.html#Pointers_to_functions
@@ -244,7 +236,7 @@ void InitMainMenu(entt::registry& registry, SceneManager* sceneManager)
     entt::entity playButton = registry. create();
     registry.emplace<PositionComponent>(playButton, Vector2{WINDOW_WIDTH/2 - 80, WINDOW_HEIGHT/2 + 100});
     registry.emplace<SizeComponent>(playButton, 150.0f, 50.0f);
-    registry.emplace<TextComponent>(playButton, "Play");
+    registry.emplace<TextComponent>(playButton, "Play", 25, BLACK);
     registry.emplace<HoverableComponent>(playButton, false);
     registry.emplace<ClickableComponent>(playButton, &PlayGameSystem);
 
@@ -252,7 +244,31 @@ void InitMainMenu(entt::registry& registry, SceneManager* sceneManager)
     entt::entity quitButton = registry. create();
     registry.emplace<PositionComponent>(quitButton, Vector2{WINDOW_WIDTH/2 - 80, WINDOW_HEIGHT/2 + 200});
     registry.emplace<SizeComponent>(quitButton, 150.0f, 50.0f);
-    registry.emplace<TextComponent>(quitButton, "Quit");
+    registry.emplace<TextComponent>(quitButton, "Quit", 25, BLACK);
+    registry.emplace<HoverableComponent>(quitButton, false);
+    registry.emplace<ClickableComponent>(quitButton, &QuitGameSystem);
+}
+
+void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager){
+    registry.clear();
+    // Leaderboard Text
+    entt::entity leaderboardText = registry.create();
+    registry.emplace<PositionComponent>(leaderboardText, Vector2{WINDOW_WIDTH/2 - 400, WINDOW_HEIGHT/2 - 300});
+    registry.emplace<TextComponent>(leaderboardText, "LEADERBOARD", 80, WHITE);
+
+    // Play Button
+    entt::entity playButton = registry.create();
+    registry.emplace<PositionComponent>(playButton, Vector2{WINDOW_WIDTH/2 - 200, WINDOW_HEIGHT/2 + 200});
+    registry.emplace<SizeComponent>(playButton, 150.0f, 50.0f);
+    registry.emplace<TextComponent>(playButton, "Play", 25, BLACK);
+    registry.emplace<HoverableComponent>(playButton, false);
+    registry.emplace<ClickableComponent>(playButton, &PlayGameSystem);
+
+    // Quit Button
+    entt::entity quitButton = registry.create();
+    registry.emplace<PositionComponent>(quitButton, Vector2{WINDOW_WIDTH/2 + 80, WINDOW_HEIGHT/2 + 200});
+    registry.emplace<SizeComponent>(quitButton, 150.0f, 50.0f);
+    registry.emplace<TextComponent>(quitButton, "Quit", 25, BLACK);
     registry.emplace<HoverableComponent>(quitButton, false);
     registry.emplace<ClickableComponent>(quitButton, &QuitGameSystem);
 }
@@ -263,6 +279,39 @@ void UIRenderSystem(entt::registry& registry) {
     for (auto e : bgView) {
         SpriteComponent& bgTexture = bgView.get<SpriteComponent>(e);
         DrawTexture(bgTexture.sprite, 0, 0, WHITE);
+    }
+
+    // Draw buttons
+    auto view = registry.view<PositionComponent, SizeComponent, TextComponent, HoverableComponent>();
+    for (auto e : view) {
+        PositionComponent& position = view.get<PositionComponent>(e);
+        SizeComponent& size = view.get<SizeComponent>(e);
+        TextComponent& text = view.get<TextComponent>(e);
+        HoverableComponent& hover = view.get<HoverableComponent>(e);
+        Color buttonColor, textColor;
+
+        if (hover.isHovering) {
+            buttonColor = GREEN;
+            textColor = WHITE;
+        }
+        else {
+            buttonColor = WHITE;
+            textColor = BLACK;
+        }
+
+        DrawRectangle(position.position.x, position.position.y, size.width, size.height, buttonColor);
+        DrawText(text.label.c_str(), position.position.x + 50,  position.position.y + 12, 25, textColor);
+    }
+}
+
+void LeaderboardRenderSystem(entt::registry& registry) {
+    // Draw Text    
+    auto textView = registry.view<PositionComponent, TextComponent>();
+    for (auto e : textView) {
+        PositionComponent& position = textView.get<PositionComponent>(e);
+        TextComponent& text = textView.get<TextComponent>(e);
+
+        DrawText(text.label.c_str(), position.position.x + 100,  position.position.y, text.fontSize, text.textColor);
     }
 
     // Draw buttons
@@ -769,14 +818,20 @@ void DefeatedEnemiesSystem(entt::registry& registry, int& score) {
     }
 }
 
-void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused) {
+void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused, SceneManager* sceneManager) {
     auto view = registry.view<PlayerTag, HealthComponent>();
     auto weaponView = registry.view<WeaponTag>();
     for (auto e : view) {
         HealthComponent& health = view.get<HealthComponent>(e);
         if (health.currentHealth <= 0) {
             registry.destroy(e);
-            isPaused = true;
+            // isPaused = true;
+
+            // new
+            // Switch to leaderboard scene
+            if (sceneManager) {
+                sceneManager->SwitchScene(2);
+            }
         }
     }
 }
@@ -947,6 +1002,10 @@ int main() {
 
     sceneManager.RegisterScene(&mainMenuScene, 0);
     sceneManager.RegisterScene(&gameScene, 1);
+
+    LeaderboardScene leaderboardScene(&registry);
+    leaderboardScene.SetSceneManager(&sceneManager);
+    sceneManager.RegisterScene(&leaderboardScene, 2);
 
     // Start with main menu
     sceneManager.SwitchScene(0);
