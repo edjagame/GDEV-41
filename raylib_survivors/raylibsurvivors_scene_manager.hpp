@@ -139,16 +139,12 @@ void InitGun(entt::registry& registry, entt::entity e);
 void InitXPOrb(entt::registry& registry, entt::entity e, Vector2 position, float xpAmount);
 void InitChoices(entt::registry& registry);
 
-// void PlayGameSystem(entt::registry& registry, SceneManager* sceneManager);
-// void QuitGameSystem(entt::registry& registry, SceneManager* sceneManager);
 void InitMainMenu(entt::registry& registry, SceneManager* sceneManager);
 void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager);
-// void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager, int score);
 void UIRenderSystem(entt::registry& registry);
-// new
+
 void InitNameInput(entt::registry& registry);
 void LeaderboardRenderSystem(entt::registry& registry, SceneManager* sceneManager);
-// void LeaderboardRenderSystem(entt::registry& registry);
 void NameInputSystem(entt::registry& registry, SceneManager* sceneManager, int score);
 void NameInputRenderSystem(entt::registry& registry);
 void LeaderboardSwitchScene(entt::registry& registry, SceneManager* sceneManager);
@@ -160,16 +156,11 @@ void EnemyMovementSystem(entt::registry& registry, float delta_time);
 void EnemySpawnSystem(entt::registry& registry, float delta_time, const Texture2D &enemyTexture, float timeElapsed);
 void AimSystem(entt::registry& registry);
 void FireSystem(entt::registry& registry, float delta_time);
-// void Collide(entt::registry &registry, entt::entity &a, entt::entity &b, float elasticity = 1.0f);
-// bool SweptCollision(entt::registry &registry, entt::entity &a, entt::entity &b, float maxTime);
 void HitSystem(entt::registry& registry, float delta_time, std::vector<GridCell>& grid, int& score, bool& isPaused);
 void DefeatedEnemiesSystem(entt::registry& registry, int& score);
-// void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused);
 void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused, SceneManager* sceneManager);
-// bool DefeatedPlayerSystem(entt::registry& registry, bool& isPaused, SceneManager* sceneManager);
 void AccumulatorSystems (entt::registry& registry, float delta_time);
 bool IsPlayerLevelledUp(entt::registry& registry);
-// void SetPlayerLevelledUp(entt::registry& registry, bool status);
 void RandomizeUpgrades(entt::registry& registry);
 void ChooseUpgrade(entt::registry& registry, bool& isPaused);
 
@@ -239,7 +230,6 @@ class GameScene : public Scene {
             InitGun(*registry, gun_entity);
             InitChoices(*registry);
 
-            //new 
             isPaused = false;
         }
 
@@ -253,7 +243,6 @@ class GameScene : public Scene {
 
             PlayerInputSystem(*registry);
 
-            // new
             DefeatedPlayerSystem(*registry, isPaused, GetSceneManager());
 
             if(!isPaused){

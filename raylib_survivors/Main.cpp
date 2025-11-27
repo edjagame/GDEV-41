@@ -5,7 +5,7 @@
 #include <string>
 #include <set>
 #include <iostream>
-#include "raylibsurvivors_scene_manager_ldrbrd.hpp"
+#include "raylibsurvivors_scene_manager.hpp"
 //new
 #include <fstream>
 #include <sstream>
@@ -271,16 +271,22 @@ std::vector<ScoreComponent> LoadScores(const std::string& filename) {
     return scores;
 }
 
+bool CompareDescending(const ScoreComponent &scoreA, const ScoreComponent &scoreB) {
+    return scoreA.score > scoreB.score;
+}
+
 void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager){
-    registry.clear();
     // Leaderboard Text
     entt::entity leaderboardText = registry.create();
     registry.emplace<PositionComponent>(leaderboardText, Vector2{WINDOW_WIDTH/2 - 400, WINDOW_HEIGHT/2 - 300});
     registry.emplace<TextComponent>(leaderboardText, "LEADERBOARD", 80, WHITE);
 
-    std::vector<ScoreComponent> scores = LoadScores("raylibsurvivors_scores.txt");
-    if (scores.size() > 10) {
-        scores.resize(10);
+    std::vector<ScoreComponent> scores = LoadScores("raylibsurvivors_scores.text");
+
+    std::sort(scores.begin(), scores.end(), CompareDescending);
+
+    if (scores.size() > 6) {
+        scores.resize(6);
     }
 
     int positionY = 200;
@@ -438,17 +444,6 @@ void NameInputRenderSystem(entt::registry& registry) {
         DrawText(input.input.c_str(), WINDOW_WIDTH/2, WINDOW_HEIGHT/2 + 200 , 30, WHITE);
     }
 }
-
-// void InitScoresSystem(entt::registry& registry, const std::vector<ScoreComponent>& scores) {
-//     int positionY = 200;
-//     int offset = 50; // space between scores
-
-//     for (size_t i = 0; i < scores.size(); ++i) {
-//         entt::entity score = registry.create();
-//         registry.emplace<PositionComponent>(score, WINDOW_WIDTH/2 - 100, position& + (int)i * offset);
-//         registry.emplace<TextComponent>(score, scores[i].name + " " + std::to_string(scores[i].score), 30, WHITE);
-//     }
-// }
 
 void LeaderboardSwitchScene(entt::registry& registry, SceneManager* sceneManager) {
     auto view = registry.view<NameInputComponent>();
@@ -952,11 +947,7 @@ void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused, SceneManager
 
             // Let player input name to record score
             InitNameInput(registry);
-            // new
-            // Switch to leaderboard scene
-            // if (sceneManager) {
-            //     sceneManager->SwitchScene(2);
-            // }
+
         }
     }
 }
