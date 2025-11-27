@@ -5,8 +5,11 @@
 #include <string>
 #include <set>
 #include <iostream>
-#include "raylibsurvivors_scene_manager.hpp"
-
+#include "raylibsurvivors_scene_manager_ldrbrd.hpp"
+//new
+#include <fstream>
+#include <sstream>
+#include <algorithm>
 
 const int WINDOW_WIDTH = 1280;
 const int WINDOW_HEIGHT = 720;
@@ -75,6 +78,9 @@ struct HoverableComponent { bool isHovering; };
 // check if entity is clicked then call function pointer
 // source: https://en.cppreference.com/w/cpp/language/pointer.html#Pointers_to_functions
 struct ClickableComponent { void (*onClick)(entt::registry&, SceneManager*); }; 
+// new
+struct ScoreComponent { std::string name; int score; };
+struct NameInputComponent { std::string input; bool doneTyping; bool saved; };
 
 struct GridCell {
     std::vector<entt::entity> entities;
@@ -249,6 +255,22 @@ void InitMainMenu(entt::registry& registry, SceneManager* sceneManager)
     registry.emplace<ClickableComponent>(quitButton, &QuitGameSystem);
 }
 
+std::vector<ScoreComponent> LoadScores(const std::string& filename) {
+    // create a dynamic array of scores
+    std::vector<ScoreComponent> scores;
+    std::ifstream file(filename);
+    if (!file.is_open()) return scores;
+
+    std::string name;
+    int score;
+    while (file >> name >> score) {
+        scores.push_back({name, score});
+    }
+
+    file.close();
+    return scores;
+}
+
 void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager){
     registry.clear();
     // Leaderboard Text
@@ -256,6 +278,20 @@ void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager){
     registry.emplace<PositionComponent>(leaderboardText, Vector2{WINDOW_WIDTH/2 - 400, WINDOW_HEIGHT/2 - 300});
     registry.emplace<TextComponent>(leaderboardText, "LEADERBOARD", 80, WHITE);
 
+    std::vector<ScoreComponent> scores = LoadScores("raylibsurvivors_scores.txt");
+    if (scores.size() > 10) {
+        scores.resize(10);
+    }
+
+    int positionY = 200;
+    int offset = 50; // space between scores
+
+    for (size_t i = 0; i < scores.size(); ++i) {
+        entt::entity score = registry.create();
+        registry.emplace<PositionComponent>(score, float(WINDOW_WIDTH/2 - 100), float(positionY + i * offset));
+        std::string text = scores[i].name + " " + std::to_string(scores[i].score);
+        registry.emplace<TextComponent>(score, text, 30, WHITE);
+    }
     // Play Button
     entt::entity playButton = registry.create();
     registry.emplace<PositionComponent>(playButton, Vector2{WINDOW_WIDTH/2 - 200, WINDOW_HEIGHT/2 + 200});
@@ -271,6 +307,11 @@ void InitLeaderboard(entt::registry& registry, SceneManager* sceneManager){
     registry.emplace<TextComponent>(quitButton, "Quit", 25, BLACK);
     registry.emplace<HoverableComponent>(quitButton, false);
     registry.emplace<ClickableComponent>(quitButton, &QuitGameSystem);
+}
+
+void InitNameInput(entt::registry& registry) {
+    entt::entity nameInput = registry.create();
+    registry.emplace<NameInputComponent>(nameInput);
 }
 
 void UIRenderSystem(entt::registry& registry) {
@@ -304,7 +345,7 @@ void UIRenderSystem(entt::registry& registry) {
     }
 }
 
-void LeaderboardRenderSystem(entt::registry& registry) {
+void LeaderboardRenderSystem(entt::registry& registry, SceneManager* sceneManager) {
     // Draw Text    
     auto textView = registry.view<PositionComponent, TextComponent>();
     for (auto e : textView) {
@@ -334,6 +375,88 @@ void LeaderboardRenderSystem(entt::registry& registry) {
 
         DrawRectangle(position.position.x, position.position.y, size.width, size.height, buttonColor);
         DrawText(text.label.c_str(), position.position.x + 50,  position.position.y + 12, 25, textColor);
+    }
+}
+
+void SaveScoreSystem(const std::string& filename, const std::string& name, int score) {
+    std::vector<ScoreComponent> scores = LoadScores(filename);
+
+    // add new score
+    scores.push_back({name, score});
+
+    if (scores.size() > 10) {
+        scores.resize(10);
+    }
+
+    // save to file
+    std::ofstream file(filename);
+    for (auto &score : scores) {
+        file << score.name << " " << score.score << "\n";
+    }
+
+    file.close();
+}
+
+void NameInputSystem(entt::registry& registry, SceneManager* sceneManager, int score) {
+    auto view = registry.view<NameInputComponent>();
+    for(auto e : view) {
+        NameInputComponent& input = view.get<NameInputComponent>(e);
+
+        if (input.doneTyping) continue; 
+
+        // get characters
+        int key = GetCharPressed();
+        while (key > 0) {
+            if ((key >= 32) && (key <= 126) && input.input.length() < 3) {
+                input.input += static_cast<char>(key);
+            }
+            key = GetCharPressed();
+        }
+
+        // remove character with backspace
+        if(IsKeyPressed(KEY_BACKSPACE) && !input.input.empty()) {
+            input.input.pop_back();
+        }
+
+        // indicate done typing with enter
+        if(IsKeyPressed(KEY_ENTER) && !input.input.empty()) {
+            input.doneTyping = true;
+        }
+
+        if(input.doneTyping && !input.saved) {
+            SaveScoreSystem("raylibsurvivors_scores.text", input.input, score);
+            input.saved = true;
+        }
+    }
+}
+
+void NameInputRenderSystem(entt::registry& registry) {
+    auto view = registry.view<NameInputComponent>();
+    for (auto e : view) {
+        NameInputComponent& input = view.get<NameInputComponent>(e);
+
+        DrawText(input.input.c_str(), WINDOW_WIDTH/2, WINDOW_HEIGHT/2 + 200 , 30, WHITE);
+    }
+}
+
+// void InitScoresSystem(entt::registry& registry, const std::vector<ScoreComponent>& scores) {
+//     int positionY = 200;
+//     int offset = 50; // space between scores
+
+//     for (size_t i = 0; i < scores.size(); ++i) {
+//         entt::entity score = registry.create();
+//         registry.emplace<PositionComponent>(score, WINDOW_WIDTH/2 - 100, position& + (int)i * offset);
+//         registry.emplace<TextComponent>(score, scores[i].name + " " + std::to_string(scores[i].score), 30, WHITE);
+//     }
+// }
+
+void LeaderboardSwitchScene(entt::registry& registry, SceneManager* sceneManager) {
+    auto view = registry.view<NameInputComponent>();
+    for (auto e : view) {
+        NameInputComponent& input = view.get<NameInputComponent>(e);
+        if(input.doneTyping) {
+            sceneManager->SwitchScene(2); // leaderboard scene
+        }
     }
 }
 
@@ -825,13 +948,15 @@ void DefeatedPlayerSystem(entt::registry& registry, bool& isPaused, SceneManager
         HealthComponent& health = view.get<HealthComponent>(e);
         if (health.currentHealth <= 0) {
             registry.destroy(e);
-            // isPaused = true;
+            isPaused = true;
 
+            // Let player input name to record score
+            InitNameInput(registry);
             // new
             // Switch to leaderboard scene
-            if (sceneManager) {
-                sceneManager->SwitchScene(2);
-            }
+            // if (sceneManager) {
+            //     sceneManager->SwitchScene(2);
+            // }
         }
     }
 }
